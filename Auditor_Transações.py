@@ -75,20 +75,33 @@ def login_WMDIAS():
     except Exception as e:
         log("Login não requerido após refresh ou elemento não encontrado")
 
-def safe_click(driver, by_locator, nome_elemento ="Elemento", timeout = 10):
+def safe_click(driver, by_locator,nome_elemento="Elemento", timeout=10):
     try:
         element = WebDriverWait(driver, timeout).until(
             EC.element_to_be_clickable(by_locator)
         )
         element.click()
-        log(f"Clique padrão realizado com sucesso no elemento: {nome_elemento}")
+        log(f"Clique padrão realizado com sucesso no elemento:{nome_elemento}")
     except (ElementClickInterceptedException, TimeoutException) as e:
-        log(f"clique padrão falhou: {repr(e)}. Tentando com Javascript...")
+        log(f"Clique padrão falhou: {repr(e)}. Tentando com JavaScript...")
         try:
             element = WebDriverWait(driver, timeout).until(
                 EC.presence_of_element_located(by_locator)
             )
-            driver.execute_script
+            driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", element)
+            log("Clique forçado via JavaScript realizado com sucesso.")
+        except Exception as js_e:
+            log(f"Erro ao clicar com JavaScript: {repr(js_e)}")
+    except Exception as e:
+        log(f"Erro inesperado ao tentar clicar: {repr(e)}")
+def interacoes_WMDIAS(driver, actions):
+    driver.set_window_size(1920,2000)
+    try:
+        WebDriverWait(driver, 300).until(lambda d: d.execute_script("return document.readyState") == "complete")
+        time.sleep(2)
+        elemento
 
 def iniciar_processo():
     global bg_thread, stop_event, global_username, global_password
