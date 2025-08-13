@@ -1,4 +1,5 @@
 import time
+import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -6,17 +7,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 URL = "https://wmdsweb-dev1digital.mdb.com.br/"
 USUARIO = "vit06329"
 SENHA = "Ce112206@"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
+ITEM_DEPOSITO = "LA01"
 TIMEOUT = 15
-
+remessa = 000
 def log(msg):
     print(f"[DEBUG] {msg}")
 
-# ============ helpers genéricos ============
 def dump_inputs_on_context(ctx, label, max_show=20):
     try:
         inputs = ctx.find_elements(By.CSS_SELECTOR, "input")
@@ -56,10 +60,6 @@ def click_possible_login_button(driver):
     return False
 
 def set_input_value_vuetify_js(driver, input_css, value):
-    """
-    Seta o value e dispara eventos input/change para atualizar o v-model do Vuetify,
-    mesmo se o input estiver invisível.
-    """
     js = """
     const selector = arguments[0];
     const val = arguments[1];
@@ -193,8 +193,6 @@ def abrir_vuetify_dropdown(driver, field_id):
     except TimeoutException:
         log(f"[ERRO] Campo '{field_id}' não encontrado.")
         return
-
-    # Primeiro tenta encontrar o ícone clássico do Vuetify
     try:
         icon = field_container.find_element(By.CSS_SELECTOR, ".v-autocomplete__menu-icon, .mdi-menu-down, .v-input__append-inner")
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", icon)
@@ -204,7 +202,6 @@ def abrir_vuetify_dropdown(driver, field_id):
             driver.execute_script("arguments[0].click();", icon)
         log(f"[OK] Ícone de dropdown '{field_id}' clicado.")
     except Exception:
-        # Se não tiver ícone, tenta clicar diretamente no input
         try:
             input_el = field_container.find_element(By.CSS_SELECTOR, "input")
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", input_el)
@@ -213,99 +210,193 @@ def abrir_vuetify_dropdown(driver, field_id):
         except Exception as e:
             log(f"[ERRO] Falha ao clicar no input '{field_id}': {e}")
 
+def preencher_campo_autocomplete(driver, input_css, texto_input, texto_para_selecionar, timeout=10, partial=True):
+    try:
+        campo = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, input_css))
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", campo)
+        campo.clear()
+        campo.send_keys(texto_input)
+        time.sleep(1.2)
+        WebDriverWait(driver, timeout).until(
+            lambda d: len(d.find_elements(By.XPATH, "//div[contains(@class,'v-list-item')]")) > 0
+        )
 
-def selecionar_item_vuetify(driver, valor, partial=False):
-    overlay = WebDriverWait(driver, TIMEOUT).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, ".v-overlay.v-overlay--active .v-overlay__content"))
-    )
+        return selecionar_item_lista(driver, texto_para_selecionar, partial=partial)
 
-    if partial:
-        xpath_item = f".//div[contains(@class,'v-list-item-title')][contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), {repr(valor.lower())})]"
-    else:
-        xpath_item = f".//div[contains(@class,'v-list-item-title')][normalize-space()={repr(valor)}]"
-
-    item_el = None
-    for i in range(30):
-        try:
-            el = overlay.find_element(By.XPATH, xpath_item)
-            if el.is_displayed():
-                item_el = el
-                break
-        except Exception:
-            pass
-
-        # DEBUG: print itens visíveis
-        try:
-            itens_visiveis = overlay.find_elements(By.XPATH, ".//div[contains(@class,'v-list-item-title')]")
-            log(f"[OVERLAY] Itens visíveis ({len(itens_visiveis)}):")
-            for item in itens_visiveis:
-                log("   - " + item.text.strip())
-        except Exception as e:
-            log(f"[OVERLAY] Erro ao listar itens: {e}")
-
-        # Scrolla overlay
-        try:
-            scrollable = overlay.find_element(By.XPATH, ".//*[contains(@class,'v-virtual-scroll')]")
-        except Exception:
-            scrollable = overlay
-        driver.execute_script("arguments[0].scrollTop += 240;", scrollable)
-        time.sleep(0.2)
-
-    if item_el is None:
-        log(f"[Vuetify] Item '{valor}' não encontrado no overlay.")
+    except Exception as e:
+        log(f"[ERRO] Falha ao preencher campo '{input_css}': {e}")
         return False
 
-    driver.execute_script("arguments[0].scrollIntoView({block:'nearest'});", item_el)
-    try:
-        item_el.click()
-        log(f"Item '{valor}' selecionado.")
-    except Exception:
-        driver.execute_script("arguments[0].click();", item_el)
-        log(f"Item '{valor}' selecionado via JS.")
-    time.sleep(0.3)
-    return True
+def selecionar_item_lista(driver, valor_procurado, partial=True, timeout=10):
+    log(f"[DEBUG] Procurando item na lista: '{valor_procurado}'")
 
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: len(d.find_elements(By.XPATH, "//div[contains(@class,'v-list-item')]")) > 0
+        )
+    except:
+        log("[ERRO] Nenhum item da lista visível encontrado.")
+        return False
+
+    itens = driver.find_elements(By.XPATH, "//div[contains(@class,'v-list-item')]")
+    log(f"[DEBUG] {len(itens)} itens encontrados na lista.")
+
+    for item in itens:
+        texto = item.text.strip().lower()
+        if (partial and valor_procurado.lower() in texto) or (not partial and valor_procurado.lower() == texto):
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", item)
+                time.sleep(0.3)
+                item.click()
+                log(f"[OK] Item '{valor_procurado}' selecionado.")
+                return True
+            except Exception as e:
+                log(f"[ERRO] Falha ao clicar no item: {e}")
+                return False
+
+    log(f"[ERRO] Item '{valor_procurado}' não encontrado entre os {len(itens)} visíveis.")
+    return False
+def safe_click(driver, by_locator,nome_elemento="Elemento", timeout=10):
+    try:
+        element = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable(by_locator)
+        )
+        element.click()
+        log(f"Clique padrão realizado com sucesso no elemento:{nome_elemento}")
+    except (ElementClickInterceptedException, TimeoutException) as e:
+        log(f"Clique padrão falhou: {repr(e)}. Tentando com JavaScript...")
+        try:
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located(by_locator)
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", element)
+            log("Clique forçado via JavaScript realizado com sucesso.")
+        except Exception as js_e:
+            log(f"Erro ao clicar com JavaScript: {repr(js_e)}")
+    except Exception as e:
+        log(f"Erro inesperado ao tentar clicar: {repr(e)}")
+
+def realizar_login_e_selecao(driver, usuario, senha, item_filial, item_deposito):
+    log("Iniciando login e seleção...")
+    tentar_login(driver, usuario, senha, timeout=20, log=log)
+    try:
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input#FILIAL"))
+        )
+        log("[PÓS-LOGIN] Campo FILIAL disponível.")
+    except TimeoutException:
+        log("[ERRO] Campo FILIAL não apareceu após o login.")
+        return False
+
+    time.sleep(1.5)
+
+    ok_filial = preencher_campo_autocomplete(
+        driver,
+        input_css="input#FILIAL",
+        texto_input=item_filial[:4], 
+        texto_para_selecionar=item_filial
+    )
+
+    ok_deposito = preencher_campo_autocomplete(
+        driver,
+        input_css="input#DEPOSITO",
+        texto_input=item_deposito,
+        texto_para_selecionar=item_deposito
+    )
+
+    if not ok_filial or not ok_deposito:
+        log("[ERRO] Falha ao selecionar FILIAL ou DEPOSITO.")
+        return False
+
+    log("[OK] FILIAL e DEPOSITO preenchidos com sucesso.")
+    safe_click(
+        driver,
+        (By.ID, "BOTAO_SELECIONAR_LOCAL"),
+        nome_elemento="Botão Selecionar"
+    )
+    if not esperar_tela_principal(driver):
+        return False
+
+    return True
+def exportar_relatório(driver):
+    try:
+        safe_click(driver,
+                (By.ID, "BOTAO_MENU"),
+                nome_elemento="Botão de Menu"
+                )
+    except Exception as e:
+        log("Click no menu não foi concluído")
+    
+    safe_click(
+        driver,
+        (By.XPATH, "//a[contains(@href, '/conferencias') and .//div[text()='Conferências']]"),
+        nome_elemento="Item de Menu - Conferências"
+    )
+    safe_click(
+        driver,
+        (By.ID,"BOTAO_EXIBIR_FILTROS"),
+        nome_elemento="Filtros"
+    )
+
+    hoje = datetime.date.today()
+    data_inicial = hoje - datetime.timedelta(days=5)
+    data_formatada = data_inicial.strftime("%d/%m/%Y")
+
+    try:
+        ok = set_input_value_vuetify_js(driver, "#input-19", data_formatada)
+        log(f"[DATA] Data inicial preenchida via JS: {data_formatada} (ok={ok})")
+
+    except Exception as e:
+        log(f"[ERRO] Falha ao preencher data: {e}")
+def esperar_tela_principal(driver, timeout=20):
+    try:
+        log("[ESPERA] Aguardando document.readyState == 'complete'...")
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        log("[ESPERA] Página carregada.")
+
+        log("[ESPERA] Aguardando sumiço de overlays/spinners...")
+        WebDriverWait(driver, timeout).until_not(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".v-overlay--active, .v-progress-circular"))
+        )
+        log("[ESPERA] Overlays e spinners sumiram.")
+
+        log("[ESPERA] Aguardando botão BOTÃO_MENU aparecer...")
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.ID, "BOTAO_MENU"))
+        )
+        log("[PÓS-LOGIN] Tela principal totalmente carregada.")
+        return True
+
+    except TimeoutException as e:
+        log("[ERRO] A tela principal não carregou completamente.")
+        return False
 
 if __name__ == "__main__":
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
-    driver = webdriver.Chrome(options=chrome_options)
+    chrome_options = Options()
+    chrome_options.debugger_address = "127.0.0.1:9222"
+    service = Service(executable_path="C://Users//xql80316//Downloads//chromedriver-win64//chromedriver-win64//chromedriver.exe")
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    #driver.get(URL)
+    log("Página carregada.")
 
-    try:
-        driver.get(URL)
-        log("Página carregada.")
-        tentar_login(driver, USUARIO, SENHA, timeout=20, log=log)
-        try:
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input#FILIAL"))
-            )
-            log("[PÓS-LOGIN] Campo FILIAL disponível.")
-        except TimeoutException:
-            log("[ERRO] Campo FILIAL não apareceu após o login.")
-            driver.quit()
-            exit(1)
-        time.sleep(1.5)
-        abrir_vuetify_dropdown(driver, "FILIAL")
-        time.sleep(1)
-        ok = selecionar_item_vuetify(driver, ITEM_FILIAL, partial=True)
-        if not ok:
-            log("Falha ao selecionar ITEM_FILIAL.")
-
-        time.sleep(1)
-        ok = selecionar_item_vuetify(driver, ITEM_FILIAL, partial=True)
-        if not ok:
-            log("Falha ao selecionar ITEM_FILIAL. Tente partial=True ou confirme o texto exato.")
-        abrir_vuetify_dropdown(driver, "DEPOSITO")
-        time.sleep(1)
-        ok = selecionar_item_vuetify(driver, "LA01", partial=True)
-        if not ok:
-            log("Falha ao selecionar DEPOSITO. Tente partial=True ou confirme o texto exato.")
-
-
-        log("Teste concluído. Veja no navegador se a seleção foi aplicada.")
-        input("Pressione Enter para sair...")
-
-    finally:
+    sucesso = realizar_login_e_selecao(
+        driver=driver,
+        usuario=USUARIO,
+        senha=SENHA,
+        item_filial=ITEM_FILIAL,
+        item_deposito=ITEM_DEPOSITO
+    )
+    if not sucesso:
         driver.quit()
+        exit(1)
+    exportar_relatório(driver)
