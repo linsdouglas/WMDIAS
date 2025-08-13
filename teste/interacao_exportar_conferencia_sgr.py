@@ -12,8 +12,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 URL = "https://wmdsweb-dev1digital.mdb.com.br/"
-USUARIO = "vit06329"
-SENHA = "Ce112206@"
+USUARIO = "xql80316"
+SENHA = "8583@Doug"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
 ITEM_DEPOSITO = "LA01"
 TIMEOUT = 15
@@ -324,40 +324,34 @@ def realizar_login_e_selecao(driver, usuario, senha, item_filial, item_deposito)
     return True
 def exportar_relatório(driver):
     try:
-        safe_click(driver, (By.ID, "BOTAO_MENU"), nome_elemento="Botão de Menu")
+        safe_click(driver,
+                (By.ID, "BOTAO_MENU"),
+                nome_elemento="Botão de Menu"
+                )
     except Exception as e:
         log("Click no menu não foi concluído")
-
-    safe_click(driver, (By.XPATH, "//a[contains(@href, '/transacoes') and .//div[text()='Transações']]"), nome_elemento="Item de Menu - Transações")
-    safe_click(driver, (By.ID, "BOTAO_EXIBIR_FILTROS"), nome_elemento="Filtros")
+    
+    safe_click(
+        driver,
+        (By.XPATH, "//a[contains(@href, '/conferencias') and .//div[text()='Conferências']]"),
+        nome_elemento="Item de Menu - Conferências"
+    )
+    safe_click(
+        driver,
+        (By.ID,"BOTAO_EXIBIR_FILTROS"),
+        nome_elemento="Filtros"
+    )
 
     hoje = datetime.date.today()
-    data_inicial = hoje - datetime.timedelta(days=30)
-    data_final = hoje + datetime.timedelta(days=1)
-    data_formatada_inicial = data_inicial.strftime("%d/%m/%Y")
-    data_formatada_final = data_final.strftime("%d/%m/%Y")
+    data_inicial = hoje - datetime.timedelta(days=5)
+    data_formatada = data_inicial.strftime("%d/%m/%Y")
 
     try:
-        ok = set_input_value_vuetify_js(driver, "#input-101", data_formatada_inicial)
-        log(f"[DATA] Data inicial preenchida via JS: {data_formatada_inicial} (ok={ok})")
-        ok = set_input_value_vuetify_js(driver, "#input-103", data_formatada_final)
+        ok = set_input_value_vuetify_js(driver, "#input-19", data_formatada)
+        log(f"[DATA] Data inicial preenchida via JS: {data_formatada} (ok={ok})")
+
     except Exception as e:
-        log(f"[ERRO] Falha ao preencher datas: {e}")
-
-    safe_click(driver, (By.ID, "BOTAO_PESQUISAR"), nome_elemento="Botão de Pesquisar")
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//th//span[normalize-space()='Endereço']")
-            )
-        )
-        log("[INFO] Tabela carregada com sucesso.")
-    except:
-        log("[ERRO] Tabela não carregou no tempo esperado.")
-        return
-
-    safe_click(driver, (By.ID, "BOTAO_EXPORTAR"), nome_elemento="Botão de exportar")
-    
+        log(f"[ERRO] Falha ao preencher data: {e}")
 def esperar_tela_principal(driver, timeout=20):
     try:
         log("[ESPERA] Aguardando document.readyState == 'complete'...")
