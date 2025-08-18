@@ -28,12 +28,12 @@ TIMEOUT = 15
 
 stop_event = threading.Event()
 bg_thread = None
+loop_interval = 120
 loop_count = 0
 critico_acumulado = 0
 driver = None
 global_username = ""
 global_password = ""
-
 
 _log_queue = Queue()
 _original_print = builtins.print
@@ -119,13 +119,9 @@ def safe_click(driver, by_locator, nome_elemento="Elemento", timeout=10):
 
 def quebrar_estado_e_recomeçar(driver, actions, nome_relatorio):
     try:
-        safe_click(driver,
-            (By.XPATH, "//div[@class='item ng-scope' and @alt='Estoque Detalhado']"),
-            nome_elemento="Relatório Alternativo")
+        safe_click(driver,(By.XPATH, "//div[@class='item ng-scope' and @alt='Estoque Detalhado']"),"Relatório Alternativo")
         time.sleep(1)
-        safe_click(driver,
-            (By.XPATH, "//a[@class='logo' and @ui-sref='home']"),
-            nome_elemento="Botão Home")
+        safe_click(driver,(By.XPATH, "//a[@class='logo' and @ui-sref='home']"),"Botão Home")
         time.sleep(2)
         return abrir_menu_relatorio(driver, actions, nome_relatorio)
     except Exception as fallback_e:
@@ -135,24 +131,18 @@ def quebrar_estado_e_recomeçar(driver, actions, nome_relatorio):
 def abrir_menu_relatorio(driver, actions, nome_relatorio):
     try:
         log(f"[SGR] Aguardando menu 'Logística/Faturamento'...")
-        menu_logistica = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"))
-        )
+        menu_logistica = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]")))
         actions.move_to_element(menu_logistica).perform()
         time.sleep(0.5)
         menu_logistica.click()
         log("[SGR] Menu 'Logística/Faturamento' clicado.")
     except Exception:
         log("[ERRO] Falha ao clicar em 'Logística/Faturamento'. Tentando via JS...")
-        safe_click(driver,
-                   (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"),
-                   nome_elemento="Menu Logística")
+        safe_click(driver,(By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"),"Menu Logística")
         time.sleep(1)
     try:
         log("[SGR] Aguardando submenu 'Relatórios WMDiaS'...")
-        submenu = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"))
-        )
+        submenu = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']")))
         actions.move_to_element(submenu).perform()
         time.sleep(0.5)
         submenu.click()
@@ -160,36 +150,24 @@ def abrir_menu_relatorio(driver, actions, nome_relatorio):
     except Exception:
         log("[ERRO] Falha ao clicar em 'Relatórios WMDiaS'. Tentando via JS...")
         try:
-            safe_click(driver,
-                       (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"),
-                       nome_elemento="Submenu Relatórios WMDiaS")
+            safe_click(driver,(By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"),"Submenu Relatórios WMDiaS")
             time.sleep(1)
         except Exception:
             log("[BUG] Submenu estava visível/clicável, mas deu erro. Aplicando workaround...")
             return quebrar_estado_e_recomeçar(driver, actions, nome_relatorio)
     try:
         log(f"[SGR] Aguardando item final '{nome_relatorio}'...")
-        item_final = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"))
-        )
+        item_final = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']")))
         actions.move_to_element(item_final).click().perform()
         log(f"[SGR] Relatório '{nome_relatorio}' clicado com sucesso.")
         return True
     except Exception:
         log(f"[ERRO] Falha ao clicar em '{nome_relatorio}'. Tentando via JS...")
-
         try:
-            safe_click(driver,
-                (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"),
-                nome_elemento=f"Item {nome_relatorio}")
-
-            WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui selection dropdown')]//input[@class='search']"))
-            )
-
+            safe_click(driver,(By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"),f"Item {nome_relatorio}")
+            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui selection dropdown')]//input[@class='search']")))
             log(f"[SGR] Relatório '{nome_relatorio}' clicado com sucesso via JS (com validação).")
             return True
-
         except Exception:
             log(f"[FALHA] Clique JS também falhou ou tela de filtro não apareceu para '{nome_relatorio}'. Aplicando fallback...")
             return quebrar_estado_e_recomeçar(driver, actions, nome_relatorio)
@@ -222,8 +200,20 @@ def preencher_datas_e_executar(driver, dias_passado=2, dias_futuro=1):
         driver.find_element(By.ID, "D2").send_keys(data_final.strftime("%d/%m/%Y"))
         driver.find_element(By.ID, "BTN_EXECUTAR").click()
         time.sleep(5)
+        log("[SGR] Execução disparada.")
     except Exception as e:
         log(f"[ERRO] Datas/Executar: {e}")
+
+def executar_relatorio_estoque(driver):
+    try:
+        executar_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR")))
+        executar_btn.click()
+        time.sleep(5)
+        log("[SGR] Botão 'Executar' clicado para Estoque Detalhado.")
+        return True
+    except Exception as e:
+        log(f"[ERRO] Não foi possível clicar no botão 'Executar' para Estoque Detalhado: {e}")
+        return False
 
 def interacoes_sgr(driver):
     driver.fullscreen_window()
@@ -231,15 +221,12 @@ def interacoes_sgr(driver):
     abrir_menu_relatorio(driver, actions, "Rastreabilidade")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver)
-
     abrir_menu_relatorio(driver, actions, "Histórico Transações")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver, dias_passado=30)
-
     abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
     selecionar_unidade_embarcadora(driver)
     executar_relatorio_estoque(driver)
-
     return True
 
 def _default_download_dir():
@@ -273,26 +260,8 @@ def _esperar_novo_arquivo(download_dir: str, antes: set, timeout: int = 240, est
                     pass
         time.sleep(0.3)
     return None
-def executar_relatorio_estoque(driver):
-    try:
-        executar_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR"))
-        )
-        executar_btn.click()
-        time.sleep(5)
-        log("[SGR] Botão 'Executar' clicado para Estoque Detalhado.")
-        return True
-    except Exception as e:
-        log(f"[ERRO] Não foi possível clicar no botão 'Executar' para Estoque Detalhado: {e}")
-        return False
 
-
-def baixar_e_mover_relatorio(driver,
-                             botao_download_webelement,
-                             nome_relatorio: str,
-                             destino_dir: str,
-                             download_dir: str | None = None) -> str | None:
-
+def baixar_e_mover_relatorio(driver, botao_download_webelement, nome_relatorio: str, destino_dir: str, download_dir: str | None = None) -> str | None:
     download_dir = download_dir or _default_download_dir()
     if not os.path.isdir(download_dir):
         log(f"[ERRO] Pasta de downloads inválida: {download_dir}")
@@ -300,66 +269,42 @@ def baixar_e_mover_relatorio(driver,
     if not destino_dir or not os.path.isdir(destino_dir):
         log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
         return None
-
     antes = _snapshot_downloads(download_dir)
-
     try:
         driver.execute_script("arguments[0].click();", botao_download_webelement)
     except Exception:
         botao_download_webelement.click()
-
     novo_arquivo = _esperar_novo_arquivo(download_dir, antes, timeout=240, estabilizacao_seg=1.2)
     if not novo_arquivo:
         log(f"[ERRO] Timeout esperando novo arquivo para '{nome_relatorio}'.")
         return None
-
-    nome_fixo_map = {
-        "Rastreabilidade": "rastreabilidade.xlsx",
-        "Histórico Transações": "historico_transacoes.xlsx",
-        "Estoque Detalhado": "estoque_detalhado.xlsx"
-    }
-
-    nome_final = nome_fixo_map.get(nome_relatorio, f"{nome_relatorio.lower().replace(' ', '_')}.xlsx")
-
+    ext = os.path.splitext(novo_arquivo)[1].lower()
+    if ext not in [".csv", ".xlsx", ".xls"]:
+        try:
+            with open(novo_arquivo, "rb") as f:
+                sig = f.read(4)
+            ext = ".xlsx" if sig[:2] == b"PK" else ".csv"
+        except:
+            ext = ".csv"
+    base_map = {"Rastreabilidade": "rastreabilidade", "Histórico Transações": "historico_transacoes", "Estoque Detalhado": "estoque_detalhado"}
+    base = base_map.get(nome_relatorio, nome_relatorio.lower().replace(" ", "_"))
+    destino_path = os.path.join(destino_dir, f"{base}{ext}")
     try:
-        destino_path = os.path.join(destino_dir, nome_final)
         if os.path.exists(destino_path):
             os.remove(destino_path)
-
-        caminho_final = os.path.join(destino_dir, nome_final)
-        shutil.move(novo_arquivo, caminho_final)
-        log(f"[MOVIDO] {os.path.basename(novo_arquivo)} → {caminho_final}")
-        return caminho_final
+        shutil.move(novo_arquivo, destino_path)
+        log(f"[MOVIDO] {os.path.basename(novo_arquivo)} → {destino_path}")
+        return destino_path
     except Exception as e:
         log(f"[ERRO] Falha ao mover/renomear '{novo_arquivo}': {e}")
         return None
 
 
-def _timestamp():
-    return dt.now().strftime("%Y%m%d_%H%M")
-
-def _unique_target_path(base_dir: str, base_name: str) -> str:
-    name, ext = os.path.splitext(base_name)
-    destino = os.path.join(base_dir, base_name)
-    k = 2
-    while os.path.exists(destino):
-        destino = os.path.join(base_dir, f"{name}_({k}){ext}")
-        k += 1
-    return destino
-
-def _mover_renomear(src_path: str, destino_dir: str, novo_stem: str) -> str:
-    ext = os.path.splitext(src_path)[1]
-    final_name = f"{novo_stem}{ext}"
-    alvo = _unique_target_path(destino_dir, final_name)
-    os.makedirs(destino_dir, exist_ok=True)
-    shutil.move(src_path, alvo)
-    return alvo
-
 def apagar_antigos(destino_dir: str):
     try:
         for f in os.listdir(destino_dir):
             fl = f.lower()
-            if fl.endswith(".csv") and ("rastreabilidade" in fl or "historico_transacoes" in fl):
+            if (fl.endswith(".csv") or fl.endswith(".xlsx") or fl.endswith(".xls")) and ("rastreabilidade" in fl or "historico_transacoes" in fl):
                 try:
                     os.remove(os.path.join(destino_dir, f))
                 except:
@@ -367,20 +312,19 @@ def apagar_antigos(destino_dir: str):
     except:
         pass
 
+
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
     if destino_dir is None:
         destino_dir = fonte_dir
     if not destino_dir or not os.path.isdir(destino_dir):
         log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
         return False, 0
-
     def abrir_menu_manutencao_relatorio():
         try:
             safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and @alt='Consulta']"), "Menu Consulta")
             safe_click(driver, (By.XPATH, "//div[contains(@class, 'item') and @alt='Manutenção Relatório']"), "Item Manutenção Relatório")
         except Exception as e:
             log(f"[ERRO] Falha ao acessar Manutenção Relatório: {e}")
-
     def encontrar_linha_relatorio(titulo_desejado):
         linhas = driver.find_elements(By.XPATH, "//tbody/tr")
         for linha in linhas:
@@ -392,41 +336,33 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
             except:
                 continue
         return None, None
-
     def executar_relatorio(driver, nome_relatorio):
         log(f"[REEXECUTAR] Reabrindo menu para relatório: {nome_relatorio}")
         safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"), "Menu Logística")
         safe_click(driver, (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"), "Submenu Relatórios WMDiaS")
         safe_click(driver, (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"), f"Item {nome_relatorio}")
-
         if not selecionar_unidade_embarcadora(driver):
             return False
-
         if nome_relatorio != "Estoque Detalhado":
             dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
             preencher_datas_e_executar(driver, dias_passado=dias_passado)
         else:
             executar_relatorio_estoque(driver)
         return True
-
     relatorios_desejados = ["Rastreabilidade", "Histórico Transações", "Estoque Detalhado"]
     criticos = 0
-
     for relatorio in relatorios_desejados:
         tentativa = 0
-        while tentativa < 2:  
+        while tentativa < 2:
             tentativa += 1
             abrir_menu_manutencao_relatorio()
-
             log(f"[INFO] Aguardando status 'Executado' para: {relatorio}")
             linha = None
             status = None
             inicio = time.time()
-
             while (time.time() - inicio) < timeout_status:
                 driver.refresh()
                 time.sleep(3)
-
                 linha, status = encontrar_linha_relatorio(relatorio)
                 if linha is None:
                     log(f"[ESPERA] Relatório '{relatorio}' ainda não apareceu.")
@@ -435,16 +371,15 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                     break
                 elif status == "Crítico":
                     log(f"[ERRO] Relatório '{relatorio}' CRÍTICO. Reexecutando...")
+                    criticos += 1
                     executar_relatorio(driver, relatorio)
                     break
                 else:
                     log(f"[AGUARDANDO] Status atual: '{status}' → '{relatorio}'. Nova tentativa em 10s...")
                 time.sleep(10)
-
             if not linha:
                 log(f"[ERRO] Relatório '{relatorio}' não encontrado após {timeout_status} segundos.")
                 break
-
             if status != "Executado":
                 if tentativa == 1:
                     log(f"[REAVISO] Tentando reexecutar o relatório '{relatorio}' por falha/timeout.")
@@ -452,28 +387,18 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                 else:
                     log(f"[ERRO] '{relatorio}' falhou novamente após reprocessamento.")
                     break
-
             try:
                 botao_download = linha.find_element(By.XPATH, ".//a[contains(@class, 'blue') and contains(@href, '/download-file/')]")
             except Exception as e:
                 log(f"[ERRO] Botão de download não encontrado para '{relatorio}': {e}")
                 break
-
             if "Rastre" in relatorio:
                 nome_final = "Rastreabilidade"
             elif "Hist" in relatorio:
                 nome_final = "Histórico Transações"
             else:
                 nome_final = "Estoque Detalhado"
-                
-            caminho_salvo = baixar_e_mover_relatorio(
-                driver=driver,
-                botao_download_webelement=botao_download,
-                nome_relatorio=nome_final,
-                destino_dir=destino_dir,
-                download_dir=None,             
-            )
-
+            caminho_salvo = baixar_e_mover_relatorio(driver=driver, botao_download_webelement=botao_download, nome_relatorio=nome_final, destino_dir=destino_dir, download_dir=None)
             if caminho_salvo:
                 log(f"[OK] '{relatorio}' salvo em: {caminho_salvo}")
                 break
@@ -483,115 +408,199 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                     executar_relatorio(driver, relatorio)
                     continue
                 break
-
     try:
         safe_click(driver, (By.XPATH, "//a[@class='logo' and @ui-sref='home']"), "Botão Home")
         time.sleep(5)
     except Exception as e:
         log(f"[AVISO] Retorno à Home falhou: {e}")
-
     return True, criticos
 
 def ler_csv_corretamente(csv_path):
+    log(f"Processando arquivo: {os.path.basename(csv_path)}")
     with open(csv_path, 'r', encoding='latin1') as f:
         lines = [line.strip().split(';') for line in f.readlines() if line.strip()]
     if not lines:
-        raise ValueError("CSV vazio")
+        raise ValueError("Arquivo CSV vazio ou inválido")
     header = lines[0]
     data = []
-    for line in lines[1:]:
+    problemas = 0
+    for i, line in enumerate(lines[1:]):
         if len(line) == len(header):
             data.append(line)
         else:
+            problemas += 1
             corrected = line[:len(header)]
             if len(corrected) == len(header):
                 data.append(corrected)
+            else:
+                log(f"[AVISO] Linha {i+2} ignorada - número inválido de colunas: {len(line)} (esperado: {len(header)})")
+    if problemas > 0:
+        log(f"[AVISO] Foram corrigidas {problemas} linhas com problemas de formatação")
     df = pd.DataFrame(data, columns=header)
+    log("[DEBUG] Estrutura do DataFrame carregado:")
+    log(f"Total de linhas: {len(df)}")
+    log(f"Colunas: {list(df.columns)}")
+    log("[DEBUG] Primeiras linhas dos dados:")
+    for i, row in df.head(3).iterrows():
+        log(f"Linha {i}: {row.to_dict()}")
     return df
+
+def _pick_col(df, candidatos):
+    cols = {c.strip().lower(): c for c in df.columns}
+    for cand in candidatos:
+        k = cand.strip().lower()
+        if k in cols:
+            return cols[k]
+    norm_cands = {cand.strip().lower().replace(" ", "_") for cand in candidatos}
+    for c in df.columns:
+        if c.strip().lower().replace(" ", "_") in norm_cands:
+            return c
+    return None
+
+def _preparar_ultimos_movimentos(df_hist):
+    col_chave = _pick_col(df_hist, ["CHAVE_PALLET"])
+    col_created = _pick_col(df_hist, ["CREATED_AT"])
+    col_tipo = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
+    col_motivo = _pick_col(df_hist, ["MOTIVO"])
+
+    if col_chave is None or col_created is None:
+        raise ValueError("Não encontrei colunas de chave ou CREATED_AT no histórico após leitura.")
+
+    df = df_hist.copy()
+    df[col_chave] = df[col_chave].astype(str).str.strip()
+    df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False, infer_datetime_format=False)
+    df = df.dropna(subset=[col_created])
+
+    df = df.sort_values([col_chave, col_created])
+    last = df.groupby(col_chave, as_index=False).tail(1)
+
+    last = last[[col_chave, col_created] + ([col_tipo] if col_tipo else []) + ([col_motivo] if col_motivo else [])].copy()
+    last = last.rename(columns={
+        col_chave: "chave_pallete",
+        col_created: "created_at_ultimo",
+        **({col_tipo: "TIPO_MOVIMENTO_ULTIMO"} if col_tipo else {}),
+        **({col_motivo: "MOTIVO_ULTIMO"} if col_motivo else {})
+    })
+
+    if "TIPO_MOVIMENTO_ULTIMO" not in last.columns:
+        last["TIPO_MOVIMENTO_ULTIMO"] = pd.NA
+    if "MOTIVO_ULTIMO" not in last.columns:
+        last["MOTIVO_ULTIMO"] = pd.NA
+
+    if col_motivo and col_tipo:
+        df[col_motivo] = df[col_motivo].astype(str).str.strip().str.upper()
+        df[col_tipo] = df[col_tipo].astype(str).str.strip().str.upper()
+        df["__tem_remessa_saida__"] = df[col_motivo].eq("REMESSA") & df[col_tipo].eq("SAIDA")
+    else:
+        df["__tem_remessa_saida__"] = False
+
+    flags = df.groupby(col_chave)["__tem_remessa_saida__"].any().reset_index()
+    flags = flags.rename(columns={col_chave: "chave_pallete", "__tem_remessa_saida__": "tem_remessa_saida"})
+
+    out = last.merge(flags, on="chave_pallete", how="left")
+    out["tem_remessa_saida"] = out["tem_remessa_saida"].fillna(False)
+
+    return out
+
 
 def filtrar_chaves_mes(df, coluna_chave):
     chaves = df[coluna_chave].astype(str).str.strip()
     mascara = chaves.str.startswith('M431') & chaves.str.endswith('M')
     return df[mascara].copy()
+def _load_table(path):
+    log(f"Carregando arquivo: {os.path.basename(path)}")
+    if path.lower().endswith(".csv"):
+        return ler_csv_corretamente(path)
+    df = pd.read_excel(path)
+    log(f"Total de linhas: {len(df)}")
+    log(f"Colunas: {list(df.columns)}")
+    return df
 
 def analisar_rastreabilidade_incremental(fonte_dir):
+    log("Localizando arquivos na pasta para análise...")
     arquivos = os.listdir(fonte_dir)
-    rastreabilidade_files = [f for f in arquivos if 'rastreabilidade' in f.lower() and f.endswith('.csv')]
-    historico_files = [f for f in arquivos if 'historico_transacoes' in f.lower() and f.endswith('.csv')]
+    rastreabilidade_files = [f for f in arquivos if 'rastreabilidade' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
+    historico_files = [f for f in arquivos if 'historico_transacoes' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
     if not rastreabilidade_files or not historico_files:
+        log("Arquivos de rastreabilidade/histórico não encontrados.")
         return None
     rastreabilidade_path = os.path.join(fonte_dir, max(rastreabilidade_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
     historico_path = os.path.join(fonte_dir, max(historico_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
     auditoria_path = os.path.join(fonte_dir, "auditoria_24_7.xlsx")
-    df_rastreabilidade = ler_csv_corretamente(rastreabilidade_path)
-    df_historico = ler_csv_corretamente(historico_path)
+    log("Carregando arquivo de rastreabilidade...")
+    df_rastreabilidade = _load_table(rastreabilidade_path)
+    log("Carregando arquivo de histórico de transações...")
+    df_historico = _load_table(historico_path)
     coluna_rastreio = None
     for col in df_rastreabilidade.columns:
         if 'COD_RASTREABILIDADE' in col.upper():
             coluna_rastreio = col
             break
-    coluna_pallet = None
-    for col in df_historico.columns:
-        if 'CHAVE_PALLET' in col.upper():
-            coluna_pallet = col
-            break
-    if not coluna_rastreio or not coluna_pallet:
+    if not coluna_rastreio:
+        log("Coluna COD_RASTREABILIDADE não encontrada.")
         return None
+    coluna_pallet = _pick_col(df_historico, ["CHAVE_PALLET","CHAVE_PALLETE"])
+    if not coluna_pallet:
+        log("Coluna CHAVE_PALLET não encontrada no histórico.")
+        return None
+    log("Aplicando filtro MES para rastreabilidade e histórico...")
     df_rastreabilidade = filtrar_chaves_mes(df_rastreabilidade, coluna_rastreio)
     df_historico = filtrar_chaves_mes(df_historico, coluna_pallet)
+    log("Calculando última movimentação e flags...")
+    df_ultimos = _preparar_ultimos_movimentos(df_historico)
     if os.path.exists(auditoria_path):
         try:
             df_auditoria_existente = pd.read_excel(auditoria_path)
             ja_auditadas = set(df_auditoria_existente['chave_pallete'].astype(str).str.strip().tolist())
         except:
-            df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status'])
+            df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida'])
             ja_auditadas = set()
     else:
-        df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status'])
+        df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida'])
         ja_auditadas = set()
     codigos_rastreabilidade = [str(codigo).strip() for codigo in df_rastreabilidade[coluna_rastreio].unique() if pd.notna(codigo) and str(codigo).strip()]
     codigos_novos = [c for c in codigos_rastreabilidade if c not in ja_auditadas]
+    log(f"Total de chaves rastreabilidade: {len(codigos_rastreabilidade)} | Novas para auditar: {len(codigos_novos)}")
     if not codigos_novos:
+        log("Nenhuma chave nova para analisar.")
         return df_auditoria_existente
-    resultados = []
+    mapa_ultimos = df_ultimos.set_index("chave_pallete").to_dict(orient="index")
+    novos_registros = []
     for codigo in codigos_novos:
-        movimentos = df_historico[df_historico[coluna_pallet].astype(str).str.strip() == codigo]
-        if movimentos.empty:
-            resultados.append({'chave_pallete': codigo, 'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO'})
+        info = mapa_ultimos.get(codigo)
+        if info is None:
+            novos_registros.append({'chave_pallete': codigo, 'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'created_at_ultimo': pd.NaT, 'TIPO_MOVIMENTO_ULTIMO': pd.NA, 'MOTIVO_ULTIMO': pd.NA, 'tem_remessa_saida': False})
         else:
-            tem_remessa_saida = False
-            for _, row in movimentos.iterrows():
-                motivo = str(row.get('MOTIVO', '')).strip().upper()
-                tipo_movimento = str(row.get('TIPO_MOVIMENTO', '')).strip().upper()
-                if motivo == 'REMESSA' and tipo_movimento == 'SAIDA':
-                    tem_remessa_saida = True
-                    break
-            if tem_remessa_saida:
-                resultados.append({'chave_pallete': codigo, 'status': 'OK - REMESSA E SAÍDA ENCONTRADAS'})
-            else:
-                resultados.append({'chave_pallete': codigo, 'status': 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'})
-    df_novos = pd.DataFrame(resultados)
+            tem_rs = bool(info.get("tem_remessa_saida", False))
+            status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_rs else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
+            novos_registros.append({'chave_pallete': codigo, 'status': status, 'created_at_ultimo': info.get('created_at_ultimo'), 'TIPO_MOVIMENTO_ULTIMO': info.get('TIPO_MOVIMENTO_ULTIMO'), 'MOTIVO_ULTIMO': info.get('MOTIVO_ULTIMO'), 'tem_remessa_saida': tem_rs})
+    df_novos = pd.DataFrame(novos_registros)
     df_final = pd.concat([df_auditoria_existente, df_novos], ignore_index=True)
     df_final.to_excel(auditoria_path, index=False)
+    total = len(df_final)
+    novos = len(df_novos)
+    nao_encontrados = len(df_novos[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO'])
+    encontrados_sem = len(df_novos[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'])
+    encontrados_com = len(df_novos[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS'])
+    log("=== RESUMO DA AUDITORIA (NOVOS) ===")
+    log(f"Novos analisados: {novos} | Sem mov.: {nao_encontrados} | Com mov. sem REMESSA/SAÍDA: {encontrados_sem} | OK REMESSA/SAÍDA: {encontrados_com}")
+    log(f"Total acumulado na planilha: {total}")
     return df_final
+
 
 def login_sgr():
     try:
-        username_field = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.XPATH, "//input[@type='text' and @name='username']"))
-        )
+        username_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//input[@type='text' and @name='username']")))
         log("Campo de usuário encontrado, efetuando login...")
         username_field.clear()
         username_field.send_keys(global_username)
-        password_field = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.XPATH, "//input[@type='password' and @name='password']"))
-        )
+        password_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//input[@type='password' and @name='password']")))
         password_field.clear()
         password_field.send_keys(global_password)
         password_field.send_keys(Keys.ENTER)
         log("Login efetuado com sucesso.")
         time.sleep(5)
-    except Exception as e:
+    except Exception:
         log("Login não requerido após o refresh ou elemento não encontrado")
 
 def preparar_driver():
@@ -603,10 +612,6 @@ def preparar_driver():
     edge_options.add_argument("--no-sandbox")
     service = EdgeService(executable_path="C://Users//xql80316//Downloads//edgedriver_win64//msedgedriver.exe")
     driver = webdriver.Edge(service=service, options=edge_options)
-
-stop_event = threading.Event()
-bg_thread = None
-loop_interval = 120
 
 def update_timer(remaining_time):
     if remaining_time >= 0:
@@ -631,13 +636,15 @@ def background_loop():
         driver.get(URL)
         log("Abrindo URL e tentando login...")
         login_sgr()
-        log("Solicitando relatórios...")
+        log("Executando relatórios...")
         interacoes_sgr(driver)
     except Exception as e:
         log(f"[ERRO] Setup inicial: {e}")
         return
     while not stop_event.is_set():
         try:
+            log("Executando relatórios para novo ciclo...")
+            interacoes_sgr(driver)
             ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=120)
             if isinstance(ret, tuple) and len(ret) == 2:
                 ok, criticos = ret
@@ -647,6 +654,7 @@ def background_loop():
             if critico_acumulado >= 3:
                 log("[ALERTA] Muitos relatórios Crítico. Encerrando loops.")
                 break
+            log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
             loop_count += 1
             try:
@@ -709,7 +717,6 @@ def parar_processo():
     except:
         driver = None
 
-
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 janela = ctk.CTk()
@@ -754,7 +761,7 @@ frame_status = ctk.CTkFrame(janela, fg_color="transparent")
 frame_status.pack(pady=10, padx=10, fill="both", expand=True)
 loop_count_label = ctk.CTkLabel(frame_status, text="Loopings realizados: 0", font=("Arial", 12))
 loop_count_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-timer_label = ctk.CTkLabel(frame_status, text="Próximo loop em: 120 s", font=("Arial", 10))
+timer_label = ctk.CTkLabel(frame_status, text=f"Próximo loop em: {loop_interval} s", font=("Arial", 10))
 timer_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
 progress_bar = ctk.CTkProgressBar(frame_status, orientation="horizontal", width=400)
 progress_bar.grid(row=2, column=0, padx=5, pady=5, sticky="w")
