@@ -28,7 +28,7 @@ TIMEOUT = 15
 
 stop_event = threading.Event()
 bg_thread = None
-loop_interval = 600
+loop_interval = 120
 loop_count = 0
 critico_acumulado = 0
 driver = None
@@ -368,35 +368,6 @@ def apagar_antigos(destino_dir: str):
     except:
         pass
 
-def baixar_e_mover_relatorio(driver, botao_download_webelement, nome_relatorio: str, destino_dir: str, download_dir: str | None = None, incluir_timestamp: bool = True) -> str | None:
-    download_dir = download_dir or _default_download_dir()
-    if not os.path.isdir(download_dir):
-        return None
-    if not destino_dir or not os.path.isdir(destino_dir):
-        return None
-    antes = _snapshot_downloads(download_dir)
-    try:
-        driver.execute_script("arguments[0].click();", botao_download_webelement)
-    except Exception:
-        botao_download_webelement.click()
-    novo_arquivo = _esperar_novo_arquivo(download_dir, antes, timeout=240, estabilizacao_seg=1.2)
-    if not novo_arquivo:
-        return None
-    base = nome_relatorio.strip().lower()
-    if "rast" in base:
-        base = "rastreabilidade"
-    elif "hist" in base or "transa" in base:
-        base = "historico_transacoes"
-    else:
-        base = re.sub(r"\s+", "_", base)
-    if incluir_timestamp:
-        base = f"{base}_{_timestamp()}"
-    try:
-        caminho_final = _mover_renomear(novo_arquivo, destino_dir, base)
-        return caminho_final
-    except Exception:
-        return None
-
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
     if destino_dir is None:
         destino_dir = fonte_dir  
@@ -646,7 +617,6 @@ def update_timer(remaining_time):
             timer_label.configure(text="Executando processo...")
         except:
             pass
-
 
 def background_loop():
     global driver, loop_count, critico_acumulado
