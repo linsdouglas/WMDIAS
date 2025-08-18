@@ -28,7 +28,7 @@ TIMEOUT = 15
 
 stop_event = threading.Event()
 bg_thread = None
-loop_interval = 120
+loop_interval = 600
 loop_count = 0
 critico_acumulado = 0
 driver = None
@@ -77,7 +77,7 @@ def _pump_logs():
     except Empty:
         pass
     try:
-        janela.after(120, _pump_logs)
+        janela.after(600, _pump_logs)
     except:
         pass
 
@@ -313,7 +313,7 @@ def apagar_antigos(destino_dir: str):
         pass
 
 
-def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
+def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=600):
     if destino_dir is None:
         destino_dir = fonte_dir
     if not destino_dir or not os.path.isdir(destino_dir):
@@ -645,7 +645,7 @@ def background_loop():
         try:
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
-            ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=120)
+            ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=600)
             if isinstance(ret, tuple) and len(ret) == 2:
                 ok, criticos = ret
             else:
