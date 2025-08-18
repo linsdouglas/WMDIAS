@@ -28,7 +28,6 @@ TIMEOUT = 15
 
 stop_event = threading.Event()
 bg_thread = None
-loop_interval = 120
 loop_count = 0
 critico_acumulado = 0
 driver = None
@@ -370,10 +369,10 @@ def apagar_antigos(destino_dir: str):
 
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
     if destino_dir is None:
-        destino_dir = fonte_dir  
+        destino_dir = fonte_dir
     if not destino_dir or not os.path.isdir(destino_dir):
         log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
-        return False
+        return False, 0
 
     def abrir_menu_manutencao_relatorio():
         try:
@@ -406,11 +405,12 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
         if nome_relatorio != "Estoque Detalhado":
             dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
             preencher_datas_e_executar(driver, dias_passado=dias_passado)
-
+        else:
+            executar_relatorio_estoque(driver)
         return True
 
-
     relatorios_desejados = ["Rastreabilidade", "Histórico Transações", "Estoque Detalhado"]
+    criticos = 0
 
     for relatorio in relatorios_desejados:
         tentativa = 0
@@ -484,9 +484,13 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                     continue
                 break
 
-    safe_click(driver,(By.XPATH, "//a[@class='logo' and @ui-sref='home']"),"Botão Home")
-    time.sleep(5)
-    return True
+    try:
+        safe_click(driver, (By.XPATH, "//a[@class='logo' and @ui-sref='home']"), "Botão Home")
+        time.sleep(5)
+    except Exception as e:
+        log(f"[AVISO] Retorno à Home falhou: {e}")
+
+    return True, criticos
 
 def ler_csv_corretamente(csv_path):
     with open(csv_path, 'r', encoding='latin1') as f:
@@ -602,7 +606,7 @@ def preparar_driver():
 
 stop_event = threading.Event()
 bg_thread = None
-loop_interval = 600
+loop_interval = 120
 
 def update_timer(remaining_time):
     if remaining_time >= 0:
@@ -634,7 +638,11 @@ def background_loop():
         return
     while not stop_event.is_set():
         try:
-            ok, criticos = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=120)
+            ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=120)
+            if isinstance(ret, tuple) and len(ret) == 2:
+                ok, criticos = ret
+            else:
+                ok, criticos = bool(ret), 0
             critico_acumulado += criticos
             if critico_acumulado >= 3:
                 log("[ALERTA] Muitos relatórios Crítico. Encerrando loops.")
@@ -746,7 +754,7 @@ frame_status = ctk.CTkFrame(janela, fg_color="transparent")
 frame_status.pack(pady=10, padx=10, fill="both", expand=True)
 loop_count_label = ctk.CTkLabel(frame_status, text="Loopings realizados: 0", font=("Arial", 12))
 loop_count_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-timer_label = ctk.CTkLabel(frame_status, text="Próximo loop em: 600 s", font=("Arial", 10))
+timer_label = ctk.CTkLabel(frame_status, text="Próximo loop em: 120 s", font=("Arial", 10))
 timer_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
 progress_bar = ctk.CTkProgressBar(frame_status, orientation="horizontal", width=400)
 progress_bar.grid(row=2, column=0, padx=5, pady=5, sticky="w")
