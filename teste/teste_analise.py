@@ -54,116 +54,167 @@ def ler_csv_corretamente(csv_path):
     
     return df
 
+def _pick_col(df, candidatos):
+    cols = {c.strip().lower(): c for c in df.columns}
+    for cand in candidatos:
+        k = cand.strip().lower()
+        if k in cols:
+            return cols[k]
+    norm_cands = {cand.strip().lower().replace(" ", "_") for cand in candidatos}
+    for c in df.columns:
+        if c.strip().lower().replace(" ", "_") in norm_cands:
+            return c
+    return None
+
+def _preparar_ultimos_movimentos(df_hist):
+    col_chave = _pick_col(df_hist, ["CHAVE_PALLET"])
+    col_created = _pick_col(df_hist, ["CREATED_AT"])
+    col_tipo = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
+    col_motivo = _pick_col(df_hist, ["MOTIVO"])
+
+    if col_chave is None or col_created is None:
+        raise ValueError("Não encontrei colunas de chave ou CREATED_AT no histórico após leitura.")
+
+    df = df_hist.copy()
+    df[col_chave] = df[col_chave].astype(str).str.strip()
+    df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False, infer_datetime_format=False)
+    df = df.dropna(subset=[col_created])
+
+    df = df.sort_values([col_chave, col_created])
+    last = df.groupby(col_chave, as_index=False).tail(1)
+
+    last = last[[col_chave, col_created] + ([col_tipo] if col_tipo else []) + ([col_motivo] if col_motivo else [])].copy()
+    last = last.rename(columns={
+        col_chave: "chave_pallete",
+        col_created: "created_at_ultimo",
+        **({col_tipo: "TIPO_MOVIMENTO_ULTIMO"} if col_tipo else {}),
+        **({col_motivo: "MOTIVO_ULTIMO"} if col_motivo else {})
+    })
+
+    if "TIPO_MOVIMENTO_ULTIMO" not in last.columns:
+        last["TIPO_MOVIMENTO_ULTIMO"] = pd.NA
+    if "MOTIVO_ULTIMO" not in last.columns:
+        last["MOTIVO_ULTIMO"] = pd.NA
+
+    df["__tem_remessa_saida__"] = (
+        df[col_motivo].astype(str).str.strip().str.upper().eq("REMESSA") if col_motivo else False
+    ) & (
+        df[col_tipo].astype(str).str.strip().str.upper().eq("SAIDA") if col_tipo else False
+    )
+    flags = df.groupby(col_chave)["__tem_remessa_saida__"].any().reset_index()
+    flags = flags.rename(columns={col_chave: "chave_pallete", "__tem_remessa_saida__": "tem_remessa_saida"})
+
+    out = last.merge(flags, on="chave_pallete", how="left")
+    out["tem_remessa_saida"] = out["tem_remessa_saida"].fillna(False)
+
+    return out
+
 def analisar_rastreabilidade(fonte_dir):
     log("Localizando arquivos na pasta...")
     arquivos = os.listdir(fonte_dir)
-    
+
     rastreabilidade_files = [f for f in arquivos if 'rastreabilidade' in f.lower() and f.endswith('.csv')]
     if not rastreabilidade_files:
         raise FileNotFoundError("Nenhum arquivo de rastreabilidade encontrado")
     rastreabilidade_path = os.path.join(fonte_dir, max(rastreabilidade_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
-    
+
     historico_files = [f for f in arquivos if 'historico_transacoes' in f.lower() and f.endswith('.csv')]
     if not historico_files:
         raise FileNotFoundError("Nenhum arquivo de histórico de transações encontrado")
     historico_path = os.path.join(fonte_dir, max(historico_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
-    
+
     auditoria_path = os.path.join(fonte_dir, "auditoria_24_7.xlsx")
-    
+
     log("\nCarregando arquivo de rastreabilidade...")
     df_rastreabilidade = ler_csv_corretamente(rastreabilidade_path)
-    
+
     log("\nCarregando arquivo de histórico de transações...")
     df_historico = ler_csv_corretamente(historico_path)
 
     log("\nAplicando filtro para chaves MES...")
-    
     coluna_rastreio_mes = 'COD_RASTREABILIDADE'
     df_rastreabilidade = filtrar_chaves_mes(df_rastreabilidade, coluna_rastreio_mes)
-    
+
     coluna_pallet_mes = 'CHAVE_PALLET'
     df_historico = filtrar_chaves_mes(df_historico, coluna_pallet_mes)
-    
+
     coluna_rastreio = None
     for col in df_rastreabilidade.columns:
         if 'COD_RASTREABILIDADE' in col.upper():
             coluna_rastreio = col
             break
-    
     if not coluna_rastreio:
         raise ValueError("Coluna 'COD_RASTREABILIDADE' não encontrada no arquivo de rastreabilidade")
-    
+
     coluna_pallet = None
     for col in df_historico.columns:
-        if 'CHAVE_PALLET' in col.upper():
+        if 'CHAVE_PALLET' in col.upper() or 'CHAVE_PALLETE' in col.upper():
             coluna_pallet = col
             break
-    
     if not coluna_pallet:
         raise ValueError("Coluna 'CHAVE_PALLET' não encontrada no arquivo de histórico")
-    
-    df_auditoria = pd.DataFrame(columns=['chave_pallete', 'status'])
-    
-    codigos_rastreabilidade = [str(codigo).strip() 
-                             for codigo in df_rastreabilidade[coluna_rastreio].unique() 
-                             if pd.notna(codigo) and str(codigo).strip()]
-    
+
+    log("\nCalculando última movimentação por chave e flags de REMESSA/SAÍDA...")
+    df_ultimos = _preparar_ultimos_movimentos(df_historico)
+
+    df_auditoria = pd.DataFrame(columns=[
+        'chave_pallete',
+        'status',
+        'created_at_ultimo',
+        'TIPO_MOVIMENTO_ULTIMO',
+        'MOTIVO_ULTIMO'
+    ])
+
+    codigos_rastreabilidade = [str(codigo).strip()
+                               for codigo in df_rastreabilidade[coluna_rastreio].unique()
+                               if pd.notna(codigo) and str(codigo).strip()]
+
     log(f"\nIniciando análise de {len(codigos_rastreabilidade)} códigos de rastreabilidade...")
-    
+
+    mapa_ultimos = df_ultimos.set_index("chave_pallete").to_dict(orient="index")
+
     for codigo in codigos_rastreabilidade:
         log(f"\n[DEBUG] Analisando código: {codigo}")
-        
-        movimentos = df_historico[df_historico[coluna_pallet].astype(str).str.strip() == codigo]
-        
-        log(f"[DEBUG] Movimentos encontrados para este código: {len(movimentos)}")
-        
-        if movimentos.empty:
-            log("[DEBUG] Nenhum movimento encontrado para este código")
+
+        info = mapa_ultimos.get(codigo)
+        if info is None:
+            log("[DEBUG] Nenhuma movimentação encontrada no histórico para esta chave")
             df_auditoria = pd.concat([df_auditoria, pd.DataFrame([{
                 'chave_pallete': codigo,
-                'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO'
+                'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO',
+                'created_at_ultimo': pd.NaT,
+                'TIPO_MOVIMENTO_ULTIMO': pd.NA,
+                'MOTIVO_ULTIMO': pd.NA
             }])], ignore_index=True)
-        else:
-            log("[DEBUG] Exemplo de movimentos encontrados:")
-            for i, (_, row) in enumerate(movimentos.head(3).iterrows()):
-                log(f"{i+1}. MOTIVO: {row.get('MOTIVO', '')} | TIPO_MOVIMENTO: {row.get('TIPO_MOVIMENTO', '')}")
-            
-            tem_remessa_saida = False
-            for _, row in movimentos.iterrows():
-                motivo = str(row.get('MOTIVO', '')).strip().upper()
-                tipo_movimento = str(row.get('TIPO_MOVIMENTO', '')).strip().upper()
-                
-                if motivo == 'REMESSA' and tipo_movimento == 'SAIDA':
-                    tem_remessa_saida = True
-                    break
-            
-            if tem_remessa_saida:
-                status = 'OK - REMESSA E SAÍDA ENCONTRADAS'
-                log("[DEBUG] Movimento com REMESSA e SAÍDA encontrado")
-            else:
-                status = 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
-                log("[DEBUG] Nenhum movimento com REMESSA e SAÍDA encontrado")
-            
-            df_auditoria = pd.concat([df_auditoria, pd.DataFrame([{
-                'chave_pallete': codigo,
-                'status': status
-            }])], ignore_index=True)
-    
+            continue
+
+        tem_remessa_saida = bool(info.get("tem_remessa_saida", False))
+        status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_remessa_saida else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
+
+        df_auditoria = pd.concat([df_auditoria, pd.DataFrame([{
+            'chave_pallete': codigo,
+            'status': status,
+            'created_at_ultimo': info.get('created_at_ultimo'),
+            'TIPO_MOVIMENTO_ULTIMO': info.get('TIPO_MOVIMENTO_ULTIMO'),
+            'MOTIVO_ULTIMO': info.get('MOTIVO_ULTIMO')
+        }])], ignore_index=True)
+
     log(f"\nSalvando resultados da auditoria em {auditoria_path}")
     df_auditoria.to_excel(auditoria_path, index=False)
-    
+
     total = len(df_auditoria)
     nao_encontrados = len(df_auditoria[df_auditoria['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO'])
     encontrados_sem = len(df_auditoria[df_auditoria['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'])
     encontrados_com = len(df_auditoria[df_auditoria['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS'])
-    
+
     log("\n=== RESUMO DA AUDITORIA ===")
     log(f"Total de pallets analisados: {total}")
     log(f"Pallets sem movimentação: {nao_encontrados} ({nao_encontrados/total:.1%})")
     log(f"Pallets com movimentação mas sem REMESSA/SAÍDA: {encontrados_sem} ({encontrados_sem/total:.1%})")
     log(f"Pallets com REMESSA e SAÍDA encontradas: {encontrados_com} ({encontrados_com/total:.1%})")
-    
+
     return df_auditoria
+
 
 if __name__ == "__main__":
     def encontrar_pasta_onedrive_empresa():

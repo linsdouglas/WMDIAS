@@ -197,6 +197,10 @@ def interacoes_sgr(driver):
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver, dias_passado=30)
 
+    abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
+    selecionar_unidade_embarcadora(driver)
+    executar_relatorio_estoque(driver)
+
     return True
 
 def _default_download_dir():
@@ -235,33 +239,25 @@ def _esperar_novo_arquivo(download_dir: str,
         time.sleep(0.3)
     return None
 
-def _timestamp():
-    return datetime.datetime.now().strftime("%Y%m%d_%H%M")
+def executar_relatorio_estoque(driver):
+    try:
+        executar_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR"))
+        )
+        executar_btn.click()
+        time.sleep(5)
+        log("[SGR] Botão 'Executar' clicado para Estoque Detalhado.")
+        return True
+    except Exception as e:
+        log(f"[ERRO] Não foi possível clicar no botão 'Executar' para Estoque Detalhado: {e}")
+        return False
 
-def _unique_target_path(base_dir: str, base_name: str) -> str:
-    name, ext = os.path.splitext(base_name)
-    destino = os.path.join(base_dir, base_name)
-    k = 2
-    while os.path.exists(destino):
-        destino = os.path.join(base_dir, f"{name}_({k}){ext}")
-        k += 1
-    return destino
-
-def _mover_renomear(src_path: str, destino_dir: str, novo_stem: str) -> str:
-    ext = os.path.splitext(src_path)[1]
-    final_name = f"{novo_stem}{ext}"
-    alvo = _unique_target_path(destino_dir, final_name)
-    os.makedirs(destino_dir, exist_ok=True)
-    shutil.move(src_path, alvo)
-    log(f"[MOVIDO] {os.path.basename(src_path)} → {alvo}")
-    return alvo
 
 def baixar_e_mover_relatorio(driver,
                              botao_download_webelement,
                              nome_relatorio: str,
                              destino_dir: str,
-                             download_dir: str | None = None,
-                             incluir_timestamp: bool = True) -> str | None:
+                             download_dir: str | None = None) -> str | None:
 
     download_dir = download_dir or _default_download_dir()
     if not os.path.isdir(download_dir):
@@ -283,23 +279,27 @@ def baixar_e_mover_relatorio(driver,
         log(f"[ERRO] Timeout esperando novo arquivo para '{nome_relatorio}'.")
         return None
 
-    base = nome_relatorio.strip().lower()
-    if "rast" in base:
-        base = "rastreabilidade"
-    elif "hist" in base or "transa" in base:
-        base = "historico_transacoes"
-    else:
-        base = re.sub(r"\s+", "_", base)
+    nome_fixo_map = {
+        "Rastreabilidade": "rastreabilidade.xlsx",
+        "Histórico Transações": "historico_transacoes.xlsx",
+        "Estoque Detalhado": "estoque_detalhado.xlsx"
+    }
 
-    if incluir_timestamp:
-        base = f"{base}_{_timestamp()}"
+    nome_final = nome_fixo_map.get(nome_relatorio, f"{nome_relatorio.lower().replace(' ', '_')}.xlsx")
 
     try:
-        caminho_final = _mover_renomear(novo_arquivo, destino_dir, base)
+        destino_path = os.path.join(destino_dir, nome_final)
+        if os.path.exists(destino_path):
+            os.remove(destino_path)
+
+        caminho_final = os.path.join(destino_dir, nome_final)
+        shutil.move(novo_arquivo, caminho_final)
+        log(f"[MOVIDO] {os.path.basename(novo_arquivo)} → {caminho_final}")
         return caminho_final
     except Exception as e:
         log(f"[ERRO] Falha ao mover/renomear '{novo_arquivo}': {e}")
         return None
+
 
 
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
@@ -334,13 +334,17 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
         safe_click(driver, (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"), "Submenu Relatórios WMDiaS")
         safe_click(driver, (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"), f"Item {nome_relatorio}")
 
-        dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
         if not selecionar_unidade_embarcadora(driver):
             return False
-        preencher_datas_e_executar(driver, dias_passado=dias_passado)
+
+        if nome_relatorio != "Estoque Detalhado":
+            dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
+            preencher_datas_e_executar(driver, dias_passado=dias_passado)
+
         return True
 
-    relatorios_desejados = ["Rastreabilidade", "Histórico Transações"]
+
+    relatorios_desejados = ["Rastreabilidade", "Histórico Transações", "Estoque Detalhado"]
 
     for relatorio in relatorios_desejados:
         tentativa = 0
@@ -389,14 +393,19 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                 log(f"[ERRO] Botão de download não encontrado para '{relatorio}': {e}")
                 break
 
-            nome_final = "Rastreabilidade" if "Rastre" in relatorio else "Histórico Transações"
+            if "Rastre" in relatorio:
+                nome_final = "Rastreabilidade"
+            elif "Hist" in relatorio:
+                nome_final = "Histórico Transações"
+            else:
+                nome_final = "Estoque Detalhado"
+                
             caminho_salvo = baixar_e_mover_relatorio(
                 driver=driver,
                 botao_download_webelement=botao_download,
                 nome_relatorio=nome_final,
                 destino_dir=destino_dir,
                 download_dir=None,             
-                incluir_timestamp=True
             )
 
             if caminho_salvo:
@@ -409,6 +418,8 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
                     continue
                 break
 
+    safe_click(driver,(By.XPATH, "//a[@class='logo' and @ui-sref='home']"),"Botão Home")
+    time.sleep(5)
     return True
 
 if __name__ == "__main__":
