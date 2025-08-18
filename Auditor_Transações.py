@@ -120,45 +120,79 @@ def safe_click(driver, by_locator, nome_elemento="Elemento", timeout=10):
 
 def quebrar_estado_e_recomeçar(driver, actions, nome_relatorio):
     try:
-        safe_click(driver,(By.XPATH, "//div[@class='item ng-scope' and @alt='Estoque Detalhado']"),"Relatório Alternativo")
+        safe_click(driver,
+            (By.XPATH, "//div[@class='item ng-scope' and @alt='Estoque Detalhado']"),
+            nome_elemento="Relatório Alternativo")
         time.sleep(1)
-        safe_click(driver,(By.XPATH, "//a[@class='logo' and @ui-sref='home']"),"Botão Home")
+        safe_click(driver,
+            (By.XPATH, "//a[@class='logo' and @ui-sref='home']"),
+            nome_elemento="Botão Home")
         time.sleep(2)
         return abrir_menu_relatorio(driver, actions, nome_relatorio)
-    except Exception as e:
-        log(f"[FALHA] Workaround final: {e}")
+    except Exception as fallback_e:
+        log(f"[FALHA] Workaround final falhou: {fallback_e}")
         return False
 
 def abrir_menu_relatorio(driver, actions, nome_relatorio):
     try:
-        menu_logistica = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]")))
+        log(f"[SGR] Aguardando menu 'Logística/Faturamento'...")
+        menu_logistica = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"))
+        )
         actions.move_to_element(menu_logistica).perform()
         time.sleep(0.5)
         menu_logistica.click()
+        log("[SGR] Menu 'Logística/Faturamento' clicado.")
     except Exception:
-        safe_click(driver,(By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"),"Menu Logística")
+        log("[ERRO] Falha ao clicar em 'Logística/Faturamento'. Tentando via JS...")
+        safe_click(driver,
+                   (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"),
+                   nome_elemento="Menu Logística")
         time.sleep(1)
     try:
-        submenu = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']")))
+        log("[SGR] Aguardando submenu 'Relatórios WMDiaS'...")
+        submenu = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"))
+        )
         actions.move_to_element(submenu).perform()
         time.sleep(0.5)
         submenu.click()
+        log("[SGR] Submenu 'Relatórios WMDiaS' clicado.")
     except Exception:
+        log("[ERRO] Falha ao clicar em 'Relatórios WMDiaS'. Tentando via JS...")
         try:
-            safe_click(driver,(By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"),"Submenu Relatórios WMDiaS")
+            safe_click(driver,
+                       (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"),
+                       nome_elemento="Submenu Relatórios WMDiaS")
             time.sleep(1)
         except Exception:
+            log("[BUG] Submenu estava visível/clicável, mas deu erro. Aplicando workaround...")
             return quebrar_estado_e_recomeçar(driver, actions, nome_relatorio)
     try:
-        item_final = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']")))
+        log(f"[SGR] Aguardando item final '{nome_relatorio}'...")
+        item_final = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"))
+        )
         actions.move_to_element(item_final).click().perform()
+        log(f"[SGR] Relatório '{nome_relatorio}' clicado com sucesso.")
         return True
     except Exception:
+        log(f"[ERRO] Falha ao clicar em '{nome_relatorio}'. Tentando via JS...")
+
         try:
-            safe_click(driver,(By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"),f"Item {nome_relatorio}")
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui selection dropdown')]//input[@class='search']")))
+            safe_click(driver,
+                (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"),
+                nome_elemento=f"Item {nome_relatorio}")
+
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'ui selection dropdown')]//input[@class='search']"))
+            )
+
+            log(f"[SGR] Relatório '{nome_relatorio}' clicado com sucesso via JS (com validação).")
             return True
+
         except Exception:
+            log(f"[FALHA] Clique JS também falhou ou tela de filtro não apareceu para '{nome_relatorio}'. Aplicando fallback...")
             return quebrar_estado_e_recomeçar(driver, actions, nome_relatorio)
 
 def selecionar_unidade_embarcadora(driver, item_embarcadora="M431"):
@@ -198,9 +232,15 @@ def interacoes_sgr(driver):
     abrir_menu_relatorio(driver, actions, "Rastreabilidade")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver)
+
     abrir_menu_relatorio(driver, actions, "Histórico Transações")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver, dias_passado=30)
+
+    abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
+    selecionar_unidade_embarcadora(driver)
+    executar_relatorio_estoque(driver)
+
     return True
 
 def _default_download_dir():
@@ -234,6 +274,67 @@ def _esperar_novo_arquivo(download_dir: str, antes: set, timeout: int = 240, est
                     pass
         time.sleep(0.3)
     return None
+def executar_relatorio_estoque(driver):
+    try:
+        executar_btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR"))
+        )
+        executar_btn.click()
+        time.sleep(5)
+        log("[SGR] Botão 'Executar' clicado para Estoque Detalhado.")
+        return True
+    except Exception as e:
+        log(f"[ERRO] Não foi possível clicar no botão 'Executar' para Estoque Detalhado: {e}")
+        return False
+
+
+def baixar_e_mover_relatorio(driver,
+                             botao_download_webelement,
+                             nome_relatorio: str,
+                             destino_dir: str,
+                             download_dir: str | None = None) -> str | None:
+
+    download_dir = download_dir or _default_download_dir()
+    if not os.path.isdir(download_dir):
+        log(f"[ERRO] Pasta de downloads inválida: {download_dir}")
+        return None
+    if not destino_dir or not os.path.isdir(destino_dir):
+        log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
+        return None
+
+    antes = _snapshot_downloads(download_dir)
+
+    try:
+        driver.execute_script("arguments[0].click();", botao_download_webelement)
+    except Exception:
+        botao_download_webelement.click()
+
+    novo_arquivo = _esperar_novo_arquivo(download_dir, antes, timeout=240, estabilizacao_seg=1.2)
+    if not novo_arquivo:
+        log(f"[ERRO] Timeout esperando novo arquivo para '{nome_relatorio}'.")
+        return None
+
+    nome_fixo_map = {
+        "Rastreabilidade": "rastreabilidade.xlsx",
+        "Histórico Transações": "historico_transacoes.xlsx",
+        "Estoque Detalhado": "estoque_detalhado.xlsx"
+    }
+
+    nome_final = nome_fixo_map.get(nome_relatorio, f"{nome_relatorio.lower().replace(' ', '_')}.xlsx")
+
+    try:
+        destino_path = os.path.join(destino_dir, nome_final)
+        if os.path.exists(destino_path):
+            os.remove(destino_path)
+
+        caminho_final = os.path.join(destino_dir, nome_final)
+        shutil.move(novo_arquivo, caminho_final)
+        log(f"[MOVIDO] {os.path.basename(novo_arquivo)} → {caminho_final}")
+        return caminho_final
+    except Exception as e:
+        log(f"[ERRO] Falha ao mover/renomear '{novo_arquivo}': {e}")
+        return None
+
 
 def _timestamp():
     return dt.now().strftime("%Y%m%d_%H%M")
@@ -298,15 +399,18 @@ def baixar_e_mover_relatorio(driver, botao_download_webelement, nome_relatorio: 
 
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120):
     if destino_dir is None:
-        destino_dir = fonte_dir
+        destino_dir = fonte_dir  
     if not destino_dir or not os.path.isdir(destino_dir):
-        return False, 0
+        log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
+        return False
+
     def abrir_menu_manutencao_relatorio():
         try:
             safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and @alt='Consulta']"), "Menu Consulta")
             safe_click(driver, (By.XPATH, "//div[contains(@class, 'item') and @alt='Manutenção Relatório']"), "Item Manutenção Relatório")
         except Exception as e:
-            log(f"[ERRO] Manutenção Relatório: {e}")
+            log(f"[ERRO] Falha ao acessar Manutenção Relatório: {e}")
+
     def encontrar_linha_relatorio(titulo_desejado):
         linhas = driver.find_elements(By.XPATH, "//tbody/tr")
         for linha in linhas:
@@ -318,64 +422,100 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=120
             except:
                 continue
         return None, None
+
     def executar_relatorio(driver, nome_relatorio):
-        try:
-            safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"), "Menu Logística")
-            safe_click(driver, (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"), "Submenu Relatórios WMDiaS")
-            safe_click(driver, (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"), f"Item {nome_relatorio}")
-            dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
-            if not selecionar_unidade_embarcadora(driver):
-                return False
-            preencher_datas_e_executar(driver, dias_passado=dias_passado)
-            return True
-        except Exception as e:
-            log(f"[ERRO] Reexecutar {nome_relatorio}: {e}")
+        log(f"[REEXECUTAR] Reabrindo menu para relatório: {nome_relatorio}")
+        safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]"), "Menu Logística")
+        safe_click(driver, (By.XPATH, "//div[@class='item ng-scope' and @alt='Relatórios WMDiaS']"), "Submenu Relatórios WMDiaS")
+        safe_click(driver, (By.XPATH, f"//div[@class='item ng-scope' and @alt='{nome_relatorio}']"), f"Item {nome_relatorio}")
+
+        if not selecionar_unidade_embarcadora(driver):
             return False
-    relatorios_desejados = ["Rastreabilidade", "Histórico Transações"]
-    criticos = 0
-    apagar_antigos(destino_dir)
+
+        if nome_relatorio != "Estoque Detalhado":
+            dias_passado = 30 if nome_relatorio == "Histórico Transações" else 2
+            preencher_datas_e_executar(driver, dias_passado=dias_passado)
+
+        return True
+
+
+    relatorios_desejados = ["Rastreabilidade", "Histórico Transações", "Estoque Detalhado"]
+
     for relatorio in relatorios_desejados:
         tentativa = 0
-        while tentativa < 2:
+        while tentativa < 2:  
             tentativa += 1
             abrir_menu_manutencao_relatorio()
+
+            log(f"[INFO] Aguardando status 'Executado' para: {relatorio}")
             linha = None
             status = None
             inicio = time.time()
+
             while (time.time() - inicio) < timeout_status:
                 driver.refresh()
                 time.sleep(3)
+
                 linha, status = encontrar_linha_relatorio(relatorio)
                 if linha is None:
-                    pass
+                    log(f"[ESPERA] Relatório '{relatorio}' ainda não apareceu.")
                 elif status == "Executado":
+                    log(f"[OK] Relatório '{relatorio}' está pronto para download.")
                     break
                 elif status == "Crítico":
-                    criticos += 1
+                    log(f"[ERRO] Relatório '{relatorio}' CRÍTICO. Reexecutando...")
                     executar_relatorio(driver, relatorio)
                     break
+                else:
+                    log(f"[AGUARDANDO] Status atual: '{status}' → '{relatorio}'. Nova tentativa em 10s...")
                 time.sleep(10)
+
             if not linha:
+                log(f"[ERRO] Relatório '{relatorio}' não encontrado após {timeout_status} segundos.")
                 break
+
             if status != "Executado":
                 if tentativa == 1:
+                    log(f"[REAVISO] Tentando reexecutar o relatório '{relatorio}' por falha/timeout.")
                     continue
                 else:
+                    log(f"[ERRO] '{relatorio}' falhou novamente após reprocessamento.")
                     break
+
             try:
                 botao_download = linha.find_element(By.XPATH, ".//a[contains(@class, 'blue') and contains(@href, '/download-file/')]")
             except Exception as e:
+                log(f"[ERRO] Botão de download não encontrado para '{relatorio}': {e}")
                 break
-            nome_final = "Rastreabilidade" if "Rastre" in relatorio else "Histórico Transações"
-            caminho_salvo = baixar_e_mover_relatorio(driver, botao_download, nome_final, destino_dir, None, True)
-            if caminho_salvo:
-                pass
+
+            if "Rastre" in relatorio:
+                nome_final = "Rastreabilidade"
+            elif "Hist" in relatorio:
+                nome_final = "Histórico Transações"
             else:
+                nome_final = "Estoque Detalhado"
+                
+            caminho_salvo = baixar_e_mover_relatorio(
+                driver=driver,
+                botao_download_webelement=botao_download,
+                nome_relatorio=nome_final,
+                destino_dir=destino_dir,
+                download_dir=None,             
+            )
+
+            if caminho_salvo:
+                log(f"[OK] '{relatorio}' salvo em: {caminho_salvo}")
+                break
+            else:
+                log(f"[ERRO] Falha ao salvar '{relatorio}'.")
                 if tentativa == 1:
                     executar_relatorio(driver, relatorio)
                     continue
-            break
-    return True, criticos
+                break
+
+    safe_click(driver,(By.XPATH, "//a[@class='logo' and @ui-sref='home']"),"Botão Home")
+    time.sleep(5)
+    return True
 
 def ler_csv_corretamente(csv_path):
     with open(csv_path, 'r', encoding='latin1') as f:
