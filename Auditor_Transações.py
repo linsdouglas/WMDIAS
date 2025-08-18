@@ -18,28 +18,75 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.edge.options import Options as EdgeOptions
+from queue import Queue, Empty
+import builtins
 
 URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
 ITEM_DEPOSITO = "LA01"
 TIMEOUT = 15
 
-global_username = ""
-global_password = ""
-driver = None
-processo_ativo = False
+stop_event = threading.Event()
+bg_thread = None
+loop_interval = 600
 loop_count = 0
 critico_acumulado = 0
-proximo_em_seg = 120
+driver = None
+global_username = ""
+global_password = ""
+
+
+_log_queue = Queue()
+_original_print = builtins.print
 
 def log(msg):
-    s = f"[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+    s = f"[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     try:
-        log_text.insert("end", s)
-        log_text.see("end")
-        janela.update_idletasks()
+        _log_queue.put_nowait(s)
     except:
-        print(s, end="")
+        pass
+    try:
+        _original_print(s)
+    except:
+        pass
+
+def _print_ui(*args, **kwargs):
+    try:
+        s = " ".join(str(a) for a in args)
+    except:
+        s = ""
+    try:
+        _log_queue.put_nowait(s)
+    except:
+        pass
+    try:
+        _original_print(*args, **kwargs)
+    except:
+        pass
+
+builtins.print = _print_ui
+
+def _pump_logs():
+    try:
+        while True:
+            line = _log_queue.get_nowait()
+            try:
+                log_text.insert("end", line + "\n")
+                log_text.see("end")
+            except:
+                pass
+    except Empty:
+        pass
+    try:
+        janela.after(120, _pump_logs)
+    except:
+        pass
+
+def _iniciar_log_ui():
+    try:
+        _pump_logs()
+    except:
+        pass
 
 def get_resource_path(p):
     return p
@@ -413,19 +460,24 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     df_final.to_excel(auditoria_path, index=False)
     return df_final
 
-def login_WMDIAS():
+def login_sgr():
     try:
-        username_field = WebDriverWait(driver,5).until(EC.presence_of_element_located((By.XPATH,"//input[@type='text' and @name='LOGIN']")))
+        username_field = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@type='text' and @name='username']"))
+        )
+        log("Campo de usuário encontrado, efetuando login...")
         username_field.clear()
         username_field.send_keys(global_username)
-        password_field = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//input[@type='password' and @name='SENHA']")))
+        password_field = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@type='password' and @name='password']"))
+        )
         password_field.clear()
         password_field.send_keys(global_password)
         password_field.send_keys(Keys.ENTER)
+        log("Login efetuado com sucesso.")
         time.sleep(5)
-        return True
-    except Exception:
-        return True
+    except Exception as e:
+        log("Login não requerido após o refresh ou elemento não encontrado")
 
 def preparar_driver():
     global driver
@@ -434,36 +486,50 @@ def preparar_driver():
     edge_options.add_argument("--start-maximized")
     edge_options.add_argument("--disable-dev-shm-usage")
     edge_options.add_argument("--no-sandbox")
-    edge_options.debugger_address = "127.0.0.1:9222"
     service = EdgeService(executable_path="C://Users//xql80316//Downloads//edgedriver_win64//msedgedriver.exe")
     driver = webdriver.Edge(service=service, options=edge_options)
 
-def ciclo():
-    global processo_ativo, loop_count, critico_acumulado, proximo_em_seg
-    if not fonte_dir:
-        log("Pasta OneDrive não encontrada.")
-        processo_ativo = False
-        return
-    os.makedirs(fonte_dir, exist_ok=True)
+stop_event = threading.Event()
+bg_thread = None
+loop_interval = 600
+
+def update_timer(remaining_time):
+    if remaining_time >= 0:
+        try:
+            timer_label.configure(text=f"Próximo loop em: {remaining_time} s")
+            progress_bar.set(1 - (remaining_time / loop_interval))
+        except:
+            pass
+        janela.after(1000, update_timer, remaining_time - 1)
+    else:
+        try:
+            timer_label.configure(text="Executando processo...")
+        except:
+            pass
+
+
+def background_loop():
+    global driver, loop_count, critico_acumulado
     try:
-        if not driver:
+        if driver is None:
+            log("Inicializando navegador...")
             preparar_driver()
         driver.get(URL)
-        login_WMDIAS()
+        log("Abrindo URL e tentando login...")
+        login_sgr()
+        log("Solicitando relatórios...")
         interacoes_sgr(driver)
     except Exception as e:
         log(f"[ERRO] Setup inicial: {e}")
-        processo_ativo = False
         return
-    while processo_ativo:
+    while not stop_event.is_set():
         try:
             ok, criticos = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=120)
             critico_acumulado += criticos
             if critico_acumulado >= 3:
                 log("[ALERTA] Muitos relatórios Crítico. Encerrando loops.")
-                processo_ativo = False
                 break
-            df = analisar_rastreabilidade_incremental(fonte_dir)
+            _ = analisar_rastreabilidade_incremental(fonte_dir)
             loop_count += 1
             try:
                 loop_count_label.configure(text=f"Loopings realizados: {loop_count}")
@@ -471,24 +537,20 @@ def ciclo():
                 pass
             if loop_count % 3 == 0:
                 try:
+                    log("Atualizando página e validando sessão...")
                     driver.refresh()
                     time.sleep(3)
-                    login_WMDIAS()
+                    login_sgr()
                 except:
                     pass
-            proximo_em_seg = 600
-            for i in range(proximo_em_seg):
-                if not processo_ativo:
-                    break
-                try:
-                    timer_label.configure(text=f"Próximo loop em: {proximo_em_seg - i} s")
-                    progress_bar.set((i+1)/proximo_em_seg)
-                except:
-                    pass
-                time.sleep(1)
+            try:
+                janela.after(0, update_timer, loop_interval)
+            except:
+                pass
+            if stop_event.wait(loop_interval):
+                break
         except Exception as e:
             log(f"[FALHA LOOP] {e}")
-            processo_ativo = False
             break
     try:
         progress_bar.set(0)
@@ -497,21 +559,38 @@ def ciclo():
         pass
 
 def iniciar_processo():
-    global processo_ativo, global_username, global_password
-    if processo_ativo:
-        return
+    global bg_thread, global_username, global_password
     global_username = username_entry.get().strip()
     global_password = password_entry.get().strip()
     if not global_username or not global_password:
-        messagebox.showerror("Erro", "Informe usuário e senha.")
+        messagebox.showerror("Erro", "Informe o usuário e a senha para o login.")
         return
-    processo_ativo = True
-    t = threading.Thread(target=ciclo, daemon=True)
-    t.start()
+    if bg_thread is not None and bg_thread.is_alive():
+        return
+    stop_event.clear()
+    bg_thread = threading.Thread(target=background_loop, daemon=True)
+    bg_thread.start()
+    try:
+        messagebox.showinfo("Info", "Processo iniciado!")
+    except:
+        pass
+    log("Processo iniciado!")
 
 def parar_processo():
-    global processo_ativo
-    processo_ativo = False
+    global driver
+    stop_event.set()
+    try:
+        messagebox.showinfo("Info", "Processo interrompido!")
+    except:
+        pass
+    log("Processo interrompido!")
+    try:
+        if driver is not None:
+            driver.quit()
+            driver = None
+    except:
+        driver = None
+
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -565,4 +644,5 @@ rodape = ctk.CTkLabel(frame_status, text="Desenvolvido por Douglas Lins", font=(
 rodape.grid(row=5, column=0, padx=5, pady=5)
 log_text = ctk.CTkTextbox(frame_status, width=400, height=200)
 log_text.grid(row=1, column=0, padx=5, pady=5)
+_iniciar_log_ui()
 janela.mainloop()
