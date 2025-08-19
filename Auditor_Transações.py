@@ -517,7 +517,6 @@ def _preparar_ultimos_movimentos(df_hist):
     return last
 
 
-
 def filtrar_chaves_mes(df, coluna_chave):
     chaves = df[coluna_chave].astype(str).str.strip()
     mascara = chaves.str.startswith('M431') & chaves.str.endswith('M')
@@ -573,29 +572,32 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     else:
         df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida'])
         ja_auditadas = set()
-    codigos_rastreabilidade = [str(codigo).strip() for codigo in df_rastreabilidade[coluna_rastreio].unique() if pd.notna(codigo) and str(codigo).strip()]
-    codigos_novos = [c for c in codigos_rastreabilidade if c not in ja_auditadas]
-    log(f"Total de chaves rastreabilidade: {len(codigos_rastreabilidade)} | Novas para auditar: {len(codigos_novos)}")
-    if not codigos_novos:
-        log("Nenhuma chave nova para analisar.")
-        return df_auditoria_existente
+    codigos_rastreabilidade = [
+        str(codigo).strip()
+        for codigo in df_rastreabilidade[coluna_rastreio].unique()
+        if pd.notna(codigo) and str(codigo).strip()
+    ]
+
+    log(f"Total de chaves rastreabilidade (arquivo atual): {len(codigos_rastreabilidade)}")
+
     mapa_ultimos = df_ultimos.set_index("chave_pallete").to_dict(orient="index")
-    novos_registros = []
-    for codigo in codigos_novos:
+
+    registros_atual = []
+    for codigo in codigos_rastreabilidade:
         info = mapa_ultimos.get(codigo)
         if info is None:
-            novos_registros.append({
+            registros_atual.append({
                 'chave_pallete': codigo,
                 'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO',
                 'created_at_ultimo': pd.NaT,
                 'TIPO_MOVIMENTO_ULTIMO': pd.NA,
                 'MOTIVO_ULTIMO': pd.NA,
-                'tem_remessa_saida': False  
+                'tem_remessa_saida': False
             })
         else:
             tem_rs_ultimo = bool(info.get("ultimo_remessa_saida", False))
             status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_rs_ultimo else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
-            novos_registros.append({
+            registros_atual.append({
                 'chave_pallete': codigo,
                 'status': status,
                 'created_at_ultimo': info.get('created_at_ultimo'),
@@ -604,48 +606,97 @@ def analisar_rastreabilidade_incremental(fonte_dir):
                 'tem_remessa_saida': tem_rs_ultimo
             })
 
-    df_novos = pd.DataFrame(novos_registros)
-    df_final = pd.concat([df_auditoria_existente, df_novos], ignore_index=True)
+    df_calc = pd.DataFrame(registros_atual)
+
+    chaves_existentes = set(df_auditoria_existente['chave_pallete'].astype(str).str.strip()) if not df_auditoria_existente.empty else set()
+    df_novos = df_calc[~df_calc['chave_pallete'].astype(str).str.strip().isin(chaves_existentes)].copy()
+
+    if not df_auditoria_existente.empty:
+        for c in ['status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida']:
+            if c not in df_auditoria_existente.columns:
+                df_auditoria_existente[c] = pd.NA
+
+        merged = df_auditoria_existente.merge(
+            df_calc, on='chave_pallete', how='outer', suffixes=('_old','')
+        )
+
+        use_new = (
+            merged['status'].notna() &
+            (
+                merged['status_old'].isna() |
+                (merged['created_at_ultimo'].fillna(pd.Timestamp.min) >
+                 merged['created_at_ultimo_old'].fillna(pd.Timestamp.min)) |
+                (merged['status'] != merged['status_old'])
+            )
+        )
+
+        def choose(col):
+            return merged[col].where(use_new, merged[f'{col}_old'])
+
+        df_final = pd.DataFrame({
+            'chave_pallete': merged['chave_pallete'],
+            'status': choose('status'),
+            'created_at_ultimo': choose('created_at_ultimo'),
+            'TIPO_MOVIMENTO_ULTIMO': choose('TIPO_MOVIMENTO_ULTIMO'),
+            'MOTIVO_ULTIMO': choose('MOTIVO_ULTIMO'),
+            'tem_remessa_saida': choose('tem_remessa_saida')
+        })
+    else:
+        df_final = df_calc.copy()
+
     df_final.to_excel(auditoria_path, index=False)
     total = len(df_final)
     novos = len(df_novos)
-    nao_encontrados = len(df_novos[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO'])
-    encontrados_sem = len(df_novos[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'])
-    encontrados_com = len(df_novos[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS'])
+    nao_encontrados = (df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO').sum()
+    encontrados_sem = (df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA').sum()
+    encontrados_com = (df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS').sum()
+
     log("=== RESUMO DA AUDITORIA (NOVOS) ===")
     log(f"Novos analisados: {novos} | Sem mov.: {nao_encontrados} | Com mov. sem REMESSA/SAÍDA: {encontrados_sem} | OK REMESSA/SAÍDA: {encontrados_com}")
     log(f"Total acumulado na planilha: {total}")
+    
+    if novos == 0:
+        log("[EMAIL] Nenhuma chave nova nesta execução. E-mail não enviado.")
+        return df_final
+
+    if (nao_encontrados == 0) and (encontrados_sem == 0):
+        log("[EMAIL] Nenhuma NOVA ocorrência de 'Sem movimentação' ou 'Com mov. sem REMESSA/SAÍDA'. E-mail não enviado.")
+        return df_final
+
     try:
         chaves_sem_mov = df_novos.loc[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'chave_pallete'].astype(str).tolist()
         chaves_com_sem_rs = df_novos.loc[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA', 'chave_pallete'].astype(str).tolist()
         chaves_ok = df_novos.loc[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS', 'chave_pallete'].astype(str).tolist()
 
+        chaves_sem_mov.sort()
+        chaves_com_sem_rs.sort()
+        chaves_ok.sort()
+
         corpo = []
         corpo.append(f"Execução: {dt.now().strftime('%d/%m/%Y %H:%M:%S')}")
         corpo.append("")
-        corpo.append("Resumo (novos nesta execução):")
+        corpo.append("Resumo (somente novas chaves desta execução):")
         corpo.append(f"- Novos analisados: {novos}")
         corpo.append(f"- Sem movimentação: {nao_encontrados}")
         corpo.append(f"- Com movimentação, sem REMESSA/SAÍDA: {encontrados_sem}")
         corpo.append(f"- OK REMESSA/SAÍDA: {encontrados_com}")
         corpo.append("")
-        corpo.append("Detalhamento de chaves:")
+        corpo.append("Detalhamento de chaves problemáticas:")
         corpo.append("")
         corpo.append("Sem movimentação:")
         corpo.append(", ".join(chaves_sem_mov) if chaves_sem_mov else "(nenhuma)")
         corpo.append("")
         corpo.append("Com movimentação, sem REMESSA/SAÍDA:")
         corpo.append(", ".join(chaves_com_sem_rs) if chaves_com_sem_rs else "(nenhuma)")
-        corpo.append("")
-        corpo.append("OK REMESSA/SAÍDA:")
-        corpo.append(", ".join(chaves_ok) if chaves_ok else "(nenhuma)")
 
         enviar_relatorio_email(
-            assunto=f"Auditoria 24x7 — Resultado do loop ({dt.now().strftime('%d/%m/%Y %H:%M')})",
+            assunto=f"Auditoria 24x7 — NOVAS ocorrências ({dt.now().strftime('%d/%m/%Y %H:%M')})",
             corpo="\n".join(corpo)
         )
+        log("[EMAIL] Enviado pois há novas ocorrências problemáticas.")
     except Exception as e:
         log(f"[EMAIL] Falha ao compor/enviar e-mail: {e}")
+
 
     return df_final
 
