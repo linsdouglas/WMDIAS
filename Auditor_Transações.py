@@ -32,7 +32,7 @@ stop_event = threading.Event()
 bg_thread = None
 loop_interval = 600
 loop_count = 0
-critico_consecutivos = 0
+criticos_consecutivos = 0
 driver = None
 global_username = ""
 global_password = ""
@@ -472,28 +472,26 @@ def _pick_col(df, candidatos):
     return None
 
 def _preparar_ultimos_movimentos(df_hist):
-    col_chave = _pick_col(df_hist, ["CHAVE_PALLET"])
+    col_chave  = _pick_col(df_hist, ["CHAVE_PALLET"])
     col_created = _pick_col(df_hist, ["CREATED_AT"])
-    col_tipo = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
+    col_tipo   = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
     col_motivo = _pick_col(df_hist, ["MOTIVO"])
 
     if col_chave is None or col_created is None:
         raise ValueError("Não encontrei colunas de chave ou CREATED_AT no histórico após leitura.")
 
     df = df_hist.copy()
-    df[col_chave] = df[col_chave].astype(str).str.strip()
+    df[col_chave]  = df[col_chave].astype(str).str.strip()
     df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False, infer_datetime_format=False)
-    df = df.dropna(subset=[col_created])
+    df = df.dropna(subset=[col_created]).sort_values([col_chave, col_created])
 
-    df = df.sort_values([col_chave, col_created])
     last = df.groupby(col_chave, as_index=False).tail(1)
-
     last = last[[col_chave, col_created] + ([col_tipo] if col_tipo else []) + ([col_motivo] if col_motivo else [])].copy()
     last = last.rename(columns={
         col_chave: "chave_pallete",
         col_created: "created_at_ultimo",
         **({col_tipo: "TIPO_MOVIMENTO_ULTIMO"} if col_tipo else {}),
-        **({col_motivo: "MOTIVO_ULTIMO"} if col_motivo else {})
+        **({col_motivo: "MOTIVO_ULTIMO"} if col_motivo else {}),
     })
 
     if "TIPO_MOVIMENTO_ULTIMO" not in last.columns:
@@ -501,20 +499,23 @@ def _preparar_ultimos_movimentos(df_hist):
     if "MOTIVO_ULTIMO" not in last.columns:
         last["MOTIVO_ULTIMO"] = pd.NA
 
+    tipo_u   = last["TIPO_MOVIMENTO_ULTIMO"].astype(str).str.strip().str.upper()
+    motivo_u = last["MOTIVO_ULTIMO"].astype(str).str.strip().str.upper()
+    last["ultimo_remessa_saida"] = (tipo_u.eq("SAIDA")) & (motivo_u.eq("REMESSA"))
+
     if col_motivo and col_tipo:
         df[col_motivo] = df[col_motivo].astype(str).str.strip().str.upper()
-        df[col_tipo] = df[col_tipo].astype(str).str.strip().str.upper()
-        df["__tem_remessa_saida__"] = df[col_motivo].eq("REMESSA") & df[col_tipo].eq("SAIDA")
+        df[col_tipo]   = df[col_tipo].astype(str).str.strip().str.upper()
+        df["__tem_rs_any__"] = df[col_motivo].eq("REMESSA") & df[col_tipo].eq("SAIDA")
+        any_rs = df.groupby(col_chave)["__tem_rs_any__"].any().reset_index() \
+                   .rename(columns={col_chave: "chave_pallete", "__tem_rs_any__": "teve_remessa_saida_algum_momento"})
+        last = last.merge(any_rs, on="chave_pallete", how="left")
+        last["teve_remessa_saida_algum_momento"] = last["teve_remessa_saida_algum_momento"].fillna(False)
     else:
-        df["__tem_remessa_saida__"] = False
+        last["teve_remessa_saida_algum_momento"] = False
 
-    flags = df.groupby(col_chave)["__tem_remessa_saida__"].any().reset_index()
-    flags = flags.rename(columns={col_chave: "chave_pallete", "__tem_remessa_saida__": "tem_remessa_saida"})
+    return last
 
-    out = last.merge(flags, on="chave_pallete", how="left")
-    out["tem_remessa_saida"] = out["tem_remessa_saida"].fillna(False)
-
-    return out
 
 
 def filtrar_chaves_mes(df, coluna_chave):
@@ -583,11 +584,26 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     for codigo in codigos_novos:
         info = mapa_ultimos.get(codigo)
         if info is None:
-            novos_registros.append({'chave_pallete': codigo, 'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'created_at_ultimo': pd.NaT, 'TIPO_MOVIMENTO_ULTIMO': pd.NA, 'MOTIVO_ULTIMO': pd.NA, 'tem_remessa_saida': False})
+            novos_registros.append({
+                'chave_pallete': codigo,
+                'status': 'NÃO ENCONTRADO MOVIMENTAÇÃO',
+                'created_at_ultimo': pd.NaT,
+                'TIPO_MOVIMENTO_ULTIMO': pd.NA,
+                'MOTIVO_ULTIMO': pd.NA,
+                'tem_remessa_saida': False  
+            })
         else:
-            tem_rs = bool(info.get("tem_remessa_saida", False))
-            status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_rs else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
-            novos_registros.append({'chave_pallete': codigo, 'status': status, 'created_at_ultimo': info.get('created_at_ultimo'), 'TIPO_MOVIMENTO_ULTIMO': info.get('TIPO_MOVIMENTO_ULTIMO'), 'MOTIVO_ULTIMO': info.get('MOTIVO_ULTIMO'), 'tem_remessa_saida': tem_rs})
+            tem_rs_ultimo = bool(info.get("ultimo_remessa_saida", False))
+            status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_rs_ultimo else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
+            novos_registros.append({
+                'chave_pallete': codigo,
+                'status': status,
+                'created_at_ultimo': info.get('created_at_ultimo'),
+                'TIPO_MOVIMENTO_ULTIMO': info.get('TIPO_MOVIMENTO_ULTIMO'),
+                'MOTIVO_ULTIMO': info.get('MOTIVO_ULTIMO'),
+                'tem_remessa_saida': tem_rs_ultimo
+            })
+
     df_novos = pd.DataFrame(novos_registros)
     df_final = pd.concat([df_auditoria_existente, df_novos], ignore_index=True)
     df_final.to_excel(auditoria_path, index=False)
