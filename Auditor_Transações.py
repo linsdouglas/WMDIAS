@@ -32,7 +32,7 @@ stop_event = threading.Event()
 bg_thread = None
 loop_interval = 600
 loop_count = 0
-critico_acumulado = 0
+critico_consecutivos = 0
 driver = None
 global_username = ""
 global_password = ""
@@ -674,7 +674,7 @@ def update_timer(remaining_time):
             pass
 
 def background_loop():
-    global driver, loop_count, critico_acumulado
+    global driver, loop_count, criticos_consecutivos
     try:
         if driver is None:
             log("Inicializando navegador...")
@@ -687,26 +687,39 @@ def background_loop():
     except Exception as e:
         log(f"[ERRO] Setup inicial: {e}")
         return
+
     while not stop_event.is_set():
         try:
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
+
             ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=600)
             if isinstance(ret, tuple) and len(ret) == 2:
                 ok, criticos = ret
             else:
                 ok, criticos = bool(ret), 0
-            critico_acumulado += criticos
-            if critico_acumulado >= 3:
-                log("[ALERTA] Muitos relatórios Crítico. Encerrando loops.")
+
+            if criticos > 0:
+                criticos_consecutivos += 1
+                log(f"[ALERTA] Loop com status 'Crítico' (streak: {criticos_consecutivos}/3).")
+            else:
+                if criticos_consecutivos:
+                    log("[INFO] Streak de 'Crítico' zerada.")
+                criticos_consecutivos = 0
+
+            if criticos_consecutivos >= 3:
+                log("[ALERTA] 3 loops seguidos com 'Crítico'. Encerrando loops.")
                 break
+
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
+
             loop_count += 1
             try:
                 loop_count_label.configure(text=f"Loopings realizados: {loop_count}")
             except:
                 pass
+
             if loop_count % 3 == 0:
                 try:
                     log("Atualizando página e validando sessão...")
@@ -715,20 +728,24 @@ def background_loop():
                     login_sgr()
                 except:
                     pass
+
             try:
                 janela.after(0, update_timer, loop_interval)
             except:
                 pass
+
             if stop_event.wait(loop_interval):
                 break
         except Exception as e:
             log(f"[FALHA LOOP] {e}")
             break
+
     try:
         progress_bar.set(0)
         timer_label.configure(text="Próximo loop em: 0 s")
     except:
         pass
+
 
 def iniciar_processo():
     global bg_thread, global_username, global_password
