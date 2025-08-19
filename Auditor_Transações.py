@@ -472,49 +472,78 @@ def _pick_col(df, candidatos):
     return None
 
 def _preparar_ultimos_movimentos(df_hist):
-    col_chave  = _pick_col(df_hist, ["CHAVE_PALLET"])
+    col_chave   = _pick_col(df_hist, ["CHAVE_PALLET", "CHAVE_PALLETE"])
     col_created = _pick_col(df_hist, ["CREATED_AT"])
-    col_tipo   = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
-    col_motivo = _pick_col(df_hist, ["MOTIVO"])
+    col_tipo    = _pick_col(df_hist, ["TIPO_MOVIMENTO"])
+    col_motivo  = _pick_col(df_hist, ["MOTIVO"])
+    col_end     = _pick_col(df_hist, ["COD_ENDERECO", "ENDERECO"])
 
     if col_chave is None or col_created is None:
         raise ValueError("Não encontrei colunas de chave ou CREATED_AT no histórico após leitura.")
 
     df = df_hist.copy()
-    df[col_chave]  = df[col_chave].astype(str).str.strip()
-    df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False, infer_datetime_format=False)
-    df = df.dropna(subset=[col_created]).sort_values([col_chave, col_created])
 
-    last = df.groupby(col_chave, as_index=False).tail(1)
-    last = last[[col_chave, col_created] + ([col_tipo] if col_tipo else []) + ([col_motivo] if col_motivo else [])].copy()
-    last = last.rename(columns={
-        col_chave: "chave_pallete",
-        col_created: "created_at_ultimo",
-        **({col_tipo: "TIPO_MOVIMENTO_ULTIMO"} if col_tipo else {}),
-        **({col_motivo: "MOTIVO_ULTIMO"} if col_motivo else {}),
-    })
-
-    if "TIPO_MOVIMENTO_ULTIMO" not in last.columns:
-        last["TIPO_MOVIMENTO_ULTIMO"] = pd.NA
-    if "MOTIVO_ULTIMO" not in last.columns:
-        last["MOTIVO_ULTIMO"] = pd.NA
-
-    tipo_u   = last["TIPO_MOVIMENTO_ULTIMO"].astype(str).str.strip().str.upper()
-    motivo_u = last["MOTIVO_ULTIMO"].astype(str).str.strip().str.upper()
-    last["ultimo_remessa_saida"] = (tipo_u.eq("SAIDA")) & (motivo_u.eq("REMESSA"))
-
-    if col_motivo and col_tipo:
+    # normalizações
+    df[col_chave]   = df[col_chave].astype(str).str.strip()
+    df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False)
+    if col_tipo:
+        df[col_tipo] = df[col_tipo].astype(str).str.strip().str.upper()
+    if col_motivo:
         df[col_motivo] = df[col_motivo].astype(str).str.strip().str.upper()
-        df[col_tipo]   = df[col_tipo].astype(str).str.strip().str.upper()
-        df["__tem_rs_any__"] = df[col_motivo].eq("REMESSA") & df[col_tipo].eq("SAIDA")
-        any_rs = df.groupby(col_chave)["__tem_rs_any__"].any().reset_index() \
-                   .rename(columns={col_chave: "chave_pallete", "__tem_rs_any__": "teve_remessa_saida_algum_momento"})
-        last = last.merge(any_rs, on="chave_pallete", how="left")
-        last["teve_remessa_saida_algum_momento"] = last["teve_remessa_saida_algum_momento"].fillna(False)
-    else:
-        last["teve_remessa_saida_algum_momento"] = False
+    if col_end:
+        df[col_end] = df[col_end].astype(str).str.strip()
 
-    return last
+    df = df.dropna(subset=[col_created])
+
+    def _is_endereco_estoque(addr: str) -> bool:
+        a = str(addr).upper()
+        # Estoque “real”: não conter RUA/EXP
+        return ("RUA" not in a) and ("EXP" not in a)
+
+    registros = []
+    for chave, g in df.sort_values([col_chave, col_created]).groupby(col_chave, sort=False):
+        g = g.reset_index(drop=True)
+
+        # último registro "bruto"
+        last = g.iloc[-1]
+
+        # detectar possível SAÍDA automática em RUA (após entrada em endereço de estoque)
+        last_real = last
+        if (
+            col_tipo and col_end and col_motivo and
+            last[col_tipo] == "SAIDA" and
+            "RUA" in str(last[col_end]).upper() and
+            last[col_motivo] == "MOVIMENTACAO"
+        ):
+            # procurar a última ENTRADA imediatamente anterior em endereço de estoque
+            candidatos = g.iloc[:-1]
+            mask = True
+            if col_tipo:
+                mask = mask & (candidatos[col_tipo] == "ENTRADA")
+            if col_end:
+                mask = mask & candidatos[col_end].apply(_is_endereco_estoque)
+            if candidatos[mask].shape[0] > 0:
+                last_real = candidatos[mask].iloc[-1]
+
+        # flags calculadas sobre o "último real"
+        tipo_u   = str(last_real[col_tipo]).upper()   if col_tipo   else ""
+        motivo_u = str(last_real[col_motivo]).upper() if col_motivo else ""
+        end_u    = str(last_real[col_end])            if col_end    else ""
+
+        ultimo_remessa_saida    = (tipo_u == "SAIDA"   and motivo_u == "REMESSA")
+        ultimo_devolucao_estoque = (tipo_u == "ENTRADA" and _is_endereco_estoque(end_u))
+
+        registros.append({
+            "chave_pallete": chave,
+            "created_at_ultimo": last_real[col_created],
+            "TIPO_MOVIMENTO_ULTIMO": last_real[col_tipo]   if col_tipo   else pd.NA,
+            "MOTIVO_ULTIMO":         last_real[col_motivo] if col_motivo else pd.NA,
+            "ENDERECO_ULTIMO":       end_u if col_end else pd.NA,
+            "ultimo_remessa_saida":  ultimo_remessa_saida,
+            "ultimo_devolucao_estoque": ultimo_devolucao_estoque,
+        })
+
+    return pd.DataFrame(registros)
 
 
 def filtrar_chaves_mes(df, coluna_chave):
@@ -592,18 +621,23 @@ def analisar_rastreabilidade_incremental(fonte_dir):
                 'created_at_ultimo': pd.NaT,
                 'TIPO_MOVIMENTO_ULTIMO': pd.NA,
                 'MOTIVO_ULTIMO': pd.NA,
-                'tem_remessa_saida': False
+                'tem_remessa_saida': False,
             })
         else:
-            tem_rs_ultimo = bool(info.get("ultimo_remessa_saida", False))
-            status = 'OK - REMESSA E SAÍDA ENCONTRADAS' if tem_rs_ultimo else 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
+            if bool(info.get("ultimo_remessa_saida", False)):
+                status_calc = 'OK - REMESSA E SAÍDA ENCONTRADAS'
+            elif bool(info.get("ultimo_devolucao_estoque", False)):
+                status_calc = 'DEVOLUÇÃO ESTOQUE'
+            else:
+                status_calc = 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA'
+
             registros_atual.append({
                 'chave_pallete': codigo,
-                'status': status,
+                'status': status_calc,
                 'created_at_ultimo': info.get('created_at_ultimo'),
                 'TIPO_MOVIMENTO_ULTIMO': info.get('TIPO_MOVIMENTO_ULTIMO'),
                 'MOTIVO_ULTIMO': info.get('MOTIVO_ULTIMO'),
-                'tem_remessa_saida': tem_rs_ultimo
+                'tem_remessa_saida': bool(info.get("ultimo_remessa_saida", False)),
             })
 
     df_calc = pd.DataFrame(registros_atual)
@@ -648,55 +682,53 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     total = len(df_final)
     novos = len(df_novos)
     nao_encontrados = (df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO').sum()
+    devolucao_estoque = (df_novos['status'] == 'DEVOLUÇÃO ESTOQUE').sum()
     encontrados_sem = (df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA').sum()
     encontrados_com = (df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS').sum()
 
     log("=== RESUMO DA AUDITORIA (NOVOS) ===")
-    log(f"Novos analisados: {novos} | Sem mov.: {nao_encontrados} | Com mov. sem REMESSA/SAÍDA: {encontrados_sem} | OK REMESSA/SAÍDA: {encontrados_com}")
+    log(f"Novos analisados: {novos} | Sem mov.: {nao_encontrados} | Devolução Estoque: {devolucao_estoque} | Com mov. sem REMESSA/SAÍDA: {encontrados_sem} | OK REMESSA/SAÍDA: {encontrados_com}")
     log(f"Total acumulado na planilha: {total}")
-    
-    if novos == 0:
-        log("[EMAIL] Nenhuma chave nova nesta execução. E-mail não enviado.")
-        return df_final
 
-    if (nao_encontrados == 0) and (encontrados_sem == 0):
-        log("[EMAIL] Nenhuma NOVA ocorrência de 'Sem movimentação' ou 'Com mov. sem REMESSA/SAÍDA'. E-mail não enviado.")
-        return df_final
+    if novos > 0 and ((nao_encontrados > 0) or (encontrados_sem > 0) or (devolucao_estoque > 0)):
+        try:
+            ch_sem   = df_novos.loc[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'chave_pallete'].astype(str).tolist()
+            ch_dev   = df_novos.loc[df_novos['status'] == 'DEVOLUÇÃO ESTOQUE', 'chave_pallete'].astype(str).tolist()
+            ch_semrs = df_novos.loc[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA', 'chave_pallete'].astype(str).tolist()
+            ch_ok    = df_novos.loc[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS', 'chave_pallete'].astype(str).tolist()
 
-    try:
-        chaves_sem_mov = df_novos.loc[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'chave_pallete'].astype(str).tolist()
-        chaves_com_sem_rs = df_novos.loc[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA', 'chave_pallete'].astype(str).tolist()
-        chaves_ok = df_novos.loc[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS', 'chave_pallete'].astype(str).tolist()
+            ch_sem.sort(); ch_dev.sort(); ch_semrs.sort(); ch_ok.sort()
 
-        chaves_sem_mov.sort()
-        chaves_com_sem_rs.sort()
-        chaves_ok.sort()
+            corpo = []
+            corpo.append(f"Execução: {dt.now().strftime('%d/%m/%Y %H:%M:%S')}")
+            corpo.append("")
+            corpo.append("Resumo (somente novas chaves desta execução):")
+            corpo.append(f"- Novos analisados: {novos}")
+            corpo.append(f"- Sem movimentação: {nao_encontrados}")
+            corpo.append(f"- Devolução Estoque: {devolucao_estoque}")
+            corpo.append(f"- Com movimentação, sem REMESSA/SAÍDA: {encontrados_sem}")
+            corpo.append(f"- OK REMESSA/SAÍDA: {encontrados_com}")
+            corpo.append("")
+            corpo.append("Detalhamento de chaves problemáticas:")
+            corpo.append("")
+            corpo.append("Sem movimentação:")
+            corpo.append(", ".join(ch_sem) if ch_sem else "(nenhuma)")
+            corpo.append("")
+            corpo.append("Devolução Estoque:")
+            corpo.append(", ".join(ch_dev) if ch_dev else "(nenhuma)")
+            corpo.append("")
+            corpo.append("Com movimentação, sem REMESSA/SAÍDA:")
+            corpo.append(", ".join(ch_semrs) if ch_semrs else "(nenhuma)")
 
-        corpo = []
-        corpo.append(f"Execução: {dt.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        corpo.append("")
-        corpo.append("Resumo (somente novas chaves desta execução):")
-        corpo.append(f"- Novos analisados: {novos}")
-        corpo.append(f"- Sem movimentação: {nao_encontrados}")
-        corpo.append(f"- Com movimentação, sem REMESSA/SAÍDA: {encontrados_sem}")
-        corpo.append(f"- OK REMESSA/SAÍDA: {encontrados_com}")
-        corpo.append("")
-        corpo.append("Detalhamento de chaves problemáticas:")
-        corpo.append("")
-        corpo.append("Sem movimentação:")
-        corpo.append(", ".join(chaves_sem_mov) if chaves_sem_mov else "(nenhuma)")
-        corpo.append("")
-        corpo.append("Com movimentação, sem REMESSA/SAÍDA:")
-        corpo.append(", ".join(chaves_com_sem_rs) if chaves_com_sem_rs else "(nenhuma)")
-
-        enviar_relatorio_email(
-            assunto=f"Auditoria 24x7 — NOVAS ocorrências ({dt.now().strftime('%d/%m/%Y %H:%M')})",
-            corpo="\n".join(corpo)
-        )
-        log("[EMAIL] Enviado pois há novas ocorrências problemáticas.")
-    except Exception as e:
-        log(f"[EMAIL] Falha ao compor/enviar e-mail: {e}")
-
+            enviar_relatorio_email(
+                assunto=f"Auditoria 24x7 — NOVAS ocorrências ({dt.now().strftime('%d/%m/%Y %H:%M')})",
+                corpo="\n".join(corpo)
+            )
+            log("[EMAIL] Enviado (novas ocorrências).")
+        except Exception as e:
+            log(f"[EMAIL] Falha ao compor/enviar e-mail: {e}")
+    else:
+        log("[EMAIL] Nada novo/ problemático nesta execução. E-mail não enviado.")
 
     return df_final
 
