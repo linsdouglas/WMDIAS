@@ -20,6 +20,8 @@ from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from queue import Queue, Empty
 import builtins
+import yagmail
+
 
 URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
@@ -89,6 +91,18 @@ def _iniciar_log_ui():
 
 def get_resource_path(p):
     return p
+def enviar_relatorio_email(assunto, corpo):
+    try:
+        yag = yagmail.SMTP(user='mdiasbrancoautomacao@gmail.com', password='secwygmzlibyxhhh')
+        yag.send(
+            to=['douglas.lins2@mdiasbranco.com.br'],
+            subject=assunto,
+            contents=corpo
+        )
+        log("E-mail de resultado enviado.")
+    except Exception as e:
+        log(f"Falha ao enviar e-mail de resultado: {e}")
+
 
 def encontrar_pasta_onedrive_empresa():
     user_dir = os.environ["USERPROFILE"]
@@ -585,8 +599,39 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     log("=== RESUMO DA AUDITORIA (NOVOS) ===")
     log(f"Novos analisados: {novos} | Sem mov.: {nao_encontrados} | Com mov. sem REMESSA/SAÍDA: {encontrados_sem} | OK REMESSA/SAÍDA: {encontrados_com}")
     log(f"Total acumulado na planilha: {total}")
-    return df_final
+    try:
+        chaves_sem_mov = df_novos.loc[df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO', 'chave_pallete'].astype(str).tolist()
+        chaves_com_sem_rs = df_novos.loc[df_novos['status'] == 'MOVIMENTAÇÃO ENCONTRADA MAS SEM REMESSA/SAÍDA', 'chave_pallete'].astype(str).tolist()
+        chaves_ok = df_novos.loc[df_novos['status'] == 'OK - REMESSA E SAÍDA ENCONTRADAS', 'chave_pallete'].astype(str).tolist()
 
+        corpo = []
+        corpo.append(f"Execução: {dt.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        corpo.append("")
+        corpo.append("Resumo (novos nesta execução):")
+        corpo.append(f"- Novos analisados: {novos}")
+        corpo.append(f"- Sem movimentação: {nao_encontrados}")
+        corpo.append(f"- Com movimentação, sem REMESSA/SAÍDA: {encontrados_sem}")
+        corpo.append(f"- OK REMESSA/SAÍDA: {encontrados_com}")
+        corpo.append("")
+        corpo.append("Detalhamento de chaves:")
+        corpo.append("")
+        corpo.append("Sem movimentação:")
+        corpo.append(", ".join(chaves_sem_mov) if chaves_sem_mov else "(nenhuma)")
+        corpo.append("")
+        corpo.append("Com movimentação, sem REMESSA/SAÍDA:")
+        corpo.append(", ".join(chaves_com_sem_rs) if chaves_com_sem_rs else "(nenhuma)")
+        corpo.append("")
+        corpo.append("OK REMESSA/SAÍDA:")
+        corpo.append(", ".join(chaves_ok) if chaves_ok else "(nenhuma)")
+
+        enviar_relatorio_email(
+            assunto=f"Auditoria 24x7 — Resultado do loop ({dt.now().strftime('%d/%m/%Y %H:%M')})",
+            corpo="\n".join(corpo)
+        )
+    except Exception as e:
+        log(f"[EMAIL] Falha ao compor/enviar e-mail: {e}")
+
+    return df_final
 
 def login_sgr():
     try:
