@@ -655,6 +655,7 @@ def preparar_driver():
     edge_options.add_argument("--start-maximized")
     edge_options.add_argument("--disable-dev-shm-usage")
     edge_options.add_argument("--no-sandbox")
+    edge_options.add_argument("--headless=new")
     service = EdgeService(executable_path="C://Users//xql80316//Downloads//edgedriver_win64//msedgedriver.exe")
     driver = webdriver.Edge(service=service, options=edge_options)
 
