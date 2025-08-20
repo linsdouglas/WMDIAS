@@ -21,6 +21,8 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from queue import Queue, Empty
 import builtins
 import yagmail
+import logging, logging.handlers
+import json
 
 
 URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
@@ -39,17 +41,6 @@ global_password = ""
 
 _log_queue = Queue()
 _original_print = builtins.print
-
-def log(msg):
-    s = f"[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    try:
-        _log_queue.put_nowait(s)
-    except:
-        pass
-    try:
-        _original_print(s)
-    except:
-        pass
 
 def _print_ui(*args, **kwargs):
     try:
@@ -103,6 +94,64 @@ def enviar_relatorio_email(assunto, corpo):
     except Exception as e:
         log(f"Falha ao enviar e-mail de resultado: {e}")
 
+def save_status(extra=None):
+    dados = {
+        "ts": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "uptime_s": int(time.monotonic()),
+        "loop_count": loop_count,
+        "paused": _state["paused"],
+        "criticos_streak": criticos_consecutivos,
+        "fase": extra.get("fase") if extra else "",
+        "ultimo_erro": _state["last_error"],
+    }
+    try:
+        with open(STATUS_PATH, "w", encoding="utf-8") as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        log(f"[STATUS] Falha ao salvar: {e}", "warning")
+
+
+def apply_command(cmd: str):
+    cmd = (cmd or "").strip().lower()
+    if cmd == "pause":
+        _state["paused"] = True
+        log("Comando: PAUSE")
+    elif cmd == "resume":
+        _state["paused"] = False
+        log("Comando: RESUME")
+    elif cmd == "run_now":
+        log("Comando: RUN_NOW → antecipar ciclo")
+        stop_event.set()     
+        stop_event.clear()
+    elif cmd == "restart":
+        log("Comando: RESTART (encerrando processo)")
+        os._exit(0)
+    elif cmd == "reload_config":
+        log("Comando: RELOAD_CONFIG (implementar leitura de .env/.ini)")
+    else:
+        log(f"Comando desconhecido: {cmd}", "warning")
+
+
+def watch_commands():
+    last_mtime = None
+    while True:
+        try:
+            if os.path.exists(COMMANDS_PATH):
+                mtime = os.path.getmtime(COMMANDS_PATH)
+                if mtime != last_mtime:
+                    last_mtime = mtime
+                    with open(COMMANDS_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    queue = data.get("queue", [])
+                    for cmd in queue:
+                        apply_command(cmd)
+                    with open(COMMANDS_PATH, "w", encoding="utf-8") as f:
+                        f.write('{"queue":[]}')
+        except Exception as e:
+            log(f"[COMANDOS] Erro lendo commands.json: {e}", "warning")
+        time.sleep(5)
+
+
 
 def encontrar_pasta_onedrive_empresa():
     user_dir = os.environ["USERPROFILE"]
@@ -115,6 +164,50 @@ def encontrar_pasta_onedrive_empresa():
     return None
 
 fonte_dir = encontrar_pasta_onedrive_empresa()
+
+# === Caminhos base (OneDrive) ===
+BASE_DIR = fonte_dir or os.path.join(
+    os.environ.get("USERPROFILE", ""),
+    "OneDrive - M DIAS BRANCO",
+    "Gestão de Estoque - Gestão_Auditoria"
+)
+os.makedirs(BASE_DIR, exist_ok=True)
+
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_PATH = os.path.join(LOG_DIR, "app.log")
+STATUS_PATH = os.path.join(BASE_DIR, "status.json")
+COMMANDS_PATH = os.path.join(BASE_DIR, "commands.json")
+
+if not os.path.exists(COMMANDS_PATH):
+    try:
+        with open(COMMANDS_PATH, "w", encoding="utf-8") as f:
+            f.write('{"queue":[]}')
+    except:
+        pass
+
+_state = {"paused": False, "last_error": None}
+
+logger = logging.getLogger("auditoria247")
+logger.setLevel(logging.INFO)
+handler = logging.handlers.RotatingFileHandler(
+    LOG_PATH, maxBytes=5_000_000, backupCount=5, encoding="utf-8"
+)
+handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+logger.addHandler(handler)
+
+def log(msg, level="info"):
+    try:
+        getattr(logger, level, logger.info)(msg)
+    except Exception:
+        pass
+    try:
+        s = f"[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        _log_queue.put_nowait(s)
+    except:
+        pass
+
 
 def safe_click(driver, by_locator, nome_elemento="Elemento", timeout=10):
     try:
@@ -326,7 +419,6 @@ def apagar_antigos(destino_dir: str):
     except:
         pass
 
-
 def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=600):
     if destino_dir is None:
         destino_dir = fonte_dir
@@ -483,7 +575,6 @@ def _preparar_ultimos_movimentos(df_hist):
 
     df = df_hist.copy()
 
-    # normalizações
     df[col_chave]   = df[col_chave].astype(str).str.strip()
     df[col_created] = pd.to_datetime(df[col_created], errors="coerce", dayfirst=True, utc=False)
     if col_tipo:
@@ -497,17 +588,14 @@ def _preparar_ultimos_movimentos(df_hist):
 
     def _is_endereco_estoque(addr: str) -> bool:
         a = str(addr).upper()
-        # Estoque “real”: não conter RUA/EXP
         return ("RUA" not in a) and ("EXP" not in a)
 
     registros = []
     for chave, g in df.sort_values([col_chave, col_created]).groupby(col_chave, sort=False):
         g = g.reset_index(drop=True)
 
-        # último registro "bruto"
         last = g.iloc[-1]
 
-        # detectar possível SAÍDA automática em RUA (após entrada em endereço de estoque)
         last_real = last
         if (
             col_tipo and col_end and col_motivo and
@@ -515,7 +603,6 @@ def _preparar_ultimos_movimentos(df_hist):
             "RUA" in str(last[col_end]).upper() and
             last[col_motivo] == "MOVIMENTACAO"
         ):
-            # procurar a última ENTRADA imediatamente anterior em endereço de estoque
             candidatos = g.iloc[:-1]
             mask = True
             if col_tipo:
@@ -525,7 +612,6 @@ def _preparar_ultimos_movimentos(df_hist):
             if candidatos[mask].shape[0] > 0:
                 last_real = candidatos[mask].iloc[-1]
 
-        # flags calculadas sobre o "último real"
         tipo_u   = str(last_real[col_tipo]).upper()   if col_tipo   else ""
         motivo_u = str(last_real[col_motivo]).upper() if col_motivo else ""
         end_u    = str(last_real[col_end])            if col_end    else ""
@@ -781,52 +867,39 @@ def background_loop():
         driver.get(URL)
         log("Abrindo URL e tentando login...")
         login_sgr()
+        save_status({"fase": "pos_login"})
         log("Executando relatórios...")
         interacoes_sgr(driver)
     except Exception as e:
-        log(f"[ERRO] Setup inicial: {e}")
+        _state["last_error"] = str(e)
+        log(f"[ERRO] Setup inicial: {e}", "error")
+        save_status({"fase": "erro_setup"})
         return
 
     while not stop_event.is_set():
+        if _state["paused"]:
+            save_status({"fase": "paused"})
+            time.sleep(2)
+            continue
+
         try:
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
 
-            ret = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=600)
-            if isinstance(ret, tuple) and len(ret) == 2:
-                ok, criticos = ret
-            else:
-                ok, criticos = bool(ret), 0
-
-            if criticos > 0:
-                criticos_consecutivos += 1
-                log(f"[ALERTA] Loop com status 'Crítico' (streak: {criticos_consecutivos}/3).")
-            else:
-                if criticos_consecutivos:
-                    log("[INFO] Streak de 'Crítico' zerada.")
-                criticos_consecutivos = 0
+            ok, criticos = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=600)
+            criticos_consecutivos = criticos_consecutivos + 1 if criticos > 0 else 0
 
             if criticos_consecutivos >= 3:
-                log("[ALERTA] 3 loops seguidos com 'Crítico'. Encerrando loops.")
+                log("[ALERTA] 3 loops seguidos com 'Crítico'.", "warning")
+                _state["last_error"] = "3 críticos seguidos"
+                save_status({"fase": "critico_encerrar"})
                 break
 
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
-
             loop_count += 1
-            try:
-                loop_count_label.configure(text=f"Loopings realizados: {loop_count}")
-            except:
-                pass
 
-            if loop_count % 3 == 0:
-                try:
-                    log("Atualizando página e validando sessão...")
-                    driver.refresh()
-                    time.sleep(3)
-                    login_sgr()
-                except:
-                    pass
+            save_status({"fase": "idle"})
 
             try:
                 janela.after(0, update_timer, loop_interval)
@@ -835,8 +908,11 @@ def background_loop():
 
             if stop_event.wait(loop_interval):
                 break
+
         except Exception as e:
-            log(f"[FALHA LOOP] {e}")
+            _state["last_error"] = str(e)
+            log(f"[FALHA LOOP] {e}", "error")
+            save_status({"fase": "erro_loop"})
             break
 
     try:
@@ -932,4 +1008,6 @@ rodape.grid(row=5, column=0, padx=5, pady=5)
 log_text = ctk.CTkTextbox(frame_status, width=400, height=200)
 log_text.grid(row=1, column=0, padx=5, pady=5)
 _iniciar_log_ui()
+threading.Thread(target=watch_commands, daemon=True).start()
 janela.mainloop()
+
