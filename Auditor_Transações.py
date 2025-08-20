@@ -115,14 +115,14 @@ def apply_command(cmd: str):
     cmd = (cmd or "").strip().lower()
     if cmd == "pause":
         _state["paused"] = True
-        log("Comando: PAUSE")
+        _state["kick"] = True          
     elif cmd == "resume":
         _state["paused"] = False
+        _state["kick"] = True          
         log("Comando: RESUME")
     elif cmd == "run_now":
         log("Comando: RUN_NOW → antecipar ciclo")
-        stop_event.set()     
-        stop_event.clear()
+        _state["kick"] = True          
     elif cmd == "restart":
         log("Comando: RESTART (encerrando processo)")
         os._exit(0)
@@ -187,7 +187,7 @@ if not os.path.exists(COMMANDS_PATH):
     except:
         pass
 
-_state = {"paused": False, "last_error": None}
+_state = {"paused": False, "last_error": None, "kick": False}
 
 logger = logging.getLogger("auditoria247")
 logger.setLevel(logging.INFO)
@@ -857,6 +857,37 @@ def update_timer(remaining_time):
             timer_label.configure(text="Executando processo...")
         except:
             pass
+def _wait_next_cycle(total_seconds: int) -> bool:
+    """
+    Espera até o próximo ciclo, 1s por vez.
+    Retorna True se deve ENCERRAR o loop (stop_event setado),
+    ou False se deve seguir para o próximo ciclo.
+    Interrompe imediatamente em pause/resume/run_now via _state["kick"].
+    """
+    remaining = total_seconds
+    while remaining > 0:
+        if stop_event.is_set():
+            return True  
+
+        if _state.get("kick"):
+            _state["kick"] = False
+            return False
+
+        if _state["paused"]:
+            save_status({"fase": "paused"})
+            time.sleep(1)
+            continue
+
+        try:
+            timer_label.configure(text=f"Próximo loop em: {remaining} s")
+            progress_bar.set(1 - (remaining / loop_interval))
+        except:
+            pass
+
+        time.sleep(1)
+        remaining -= 1
+
+    return False
 
 def background_loop():
     global driver, loop_count, criticos_consecutivos
@@ -902,12 +933,14 @@ def background_loop():
             save_status({"fase": "idle"})
 
             try:
-                janela.after(0, update_timer, loop_interval)
+                timer_label.configure(text=f"Próximo loop em: {loop_interval} s")
+                progress_bar.set(0)
             except:
                 pass
 
-            if stop_event.wait(loop_interval):
-                break
+            if _wait_next_cycle(loop_interval):
+                break  
+
 
         except Exception as e:
             _state["last_error"] = str(e)
