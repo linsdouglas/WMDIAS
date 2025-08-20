@@ -23,6 +23,7 @@ import builtins
 import yagmail
 import logging, logging.handlers
 import json
+import sys
 
 
 URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
@@ -110,26 +111,37 @@ def save_status(extra=None):
     except Exception as e:
         log(f"[STATUS] Falha ao salvar: {e}", "warning")
 
-
+def restart_program():
+    if getattr(sys, 'frozen', False):  
+        exe_path = sys.executable
+        os.execl(exe_path, exe_path, *sys.argv)
+    else:
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
 def apply_command(cmd: str):
     cmd = (cmd or "").strip().lower()
     if cmd == "pause":
         _state["paused"] = True
-        _state["kick"] = True          
+        _state["kick"] = True
+        log("Comando: PAUSE")
     elif cmd == "resume":
         _state["paused"] = False
-        _state["kick"] = True          
+        _state["halted"] = False    
+        _state["kick"] = True
         log("Comando: RESUME")
     elif cmd == "run_now":
         log("Comando: RUN_NOW → antecipar ciclo")
-        _state["kick"] = True          
+        _state["halted"] = False   
+        _state["kick"] = True
     elif cmd == "restart":
-        log("Comando: RESTART (encerrando processo)")
-        os._exit(0)
+        log("Comando: RESTART (reiniciando processo)")
+        restart_program()
+
     elif cmd == "reload_config":
         log("Comando: RELOAD_CONFIG (implementar leitura de .env/.ini)")
     else:
         log(f"Comando desconhecido: {cmd}", "warning")
+
 
 
 def watch_commands():
@@ -187,7 +199,7 @@ if not os.path.exists(COMMANDS_PATH):
     except:
         pass
 
-_state = {"paused": False, "last_error": None, "kick": False}
+_state = {"paused": False, "last_error": None, "kick": False,"halted": False}
 
 logger = logging.getLogger("auditoria247")
 logger.setLevel(logging.INFO)
@@ -921,10 +933,15 @@ def background_loop():
             criticos_consecutivos = criticos_consecutivos + 1 if criticos > 0 else 0
 
             if criticos_consecutivos >= 3:
-                log("[ALERTA] 3 loops seguidos com 'Crítico'.", "warning")
+                log("[ALERTA] 3 loops seguidos com 'Crítico' → entrando em modo de segurança (halted).", "warning")
                 _state["last_error"] = "3 críticos seguidos"
-                save_status({"fase": "critico_encerrar"})
-                break
+                _state["halted"] = True
+                while _state["halted"] and not stop_event.is_set():
+                    save_status({"fase": "critico_halt"})
+                    time.sleep(1)
+                criticos_consecutivos = 0
+                continue
+
 
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
