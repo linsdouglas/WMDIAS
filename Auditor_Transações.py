@@ -142,8 +142,6 @@ def apply_command(cmd: str):
     else:
         log(f"Comando desconhecido: {cmd}", "warning")
 
-
-
 def watch_commands():
     last_mtime = None
     while True:
@@ -436,7 +434,7 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=600
         destino_dir = fonte_dir
     if not destino_dir or not os.path.isdir(destino_dir):
         log(f"[ERRO] Pasta de destino inválida: {destino_dir}")
-        return False, 0
+        return False, {}, None  
     def abrir_menu_manutencao_relatorio():
         try:
             safe_click(driver, (By.XPATH, "//div[@class='ui dropdown item' and @alt='Consulta']"), "Menu Consulta")
@@ -467,71 +465,90 @@ def baixar_relatorios_mais_recentes(driver, destino_dir=None, timeout_status=600
         else:
             executar_relatorio_estoque(driver)
         return True
+
     relatorios_desejados = ["Rastreabilidade", "Histórico Transações", "Estoque Detalhado"]
-    criticos = 0
+    criticos_por_relatorio = {r: 0 for r in relatorios_desejados}
+    relatorio_estourado = None
+
     for relatorio in relatorios_desejados:
-        tentativa = 0
-        while tentativa < 2:
-            tentativa += 1
+        # no MESMO ciclo, permitimos ATÉ 3 tentativas quando der 'Crítico'
+        tentativas_no_ciclo = 0
+
+        while tentativas_no_ciclo < 3:
+            tentativas_no_ciclo += 1
             abrir_menu_manutencao_relatorio()
             log(f"[INFO] Aguardando status 'Executado' para: {relatorio}")
+
             linha = None
             status = None
             inicio = time.time()
+
             while (time.time() - inicio) < timeout_status:
                 driver.refresh()
                 time.sleep(3)
                 linha, status = encontrar_linha_relatorio(relatorio)
+
                 if linha is None:
                     log(f"[ESPERA] Relatório '{relatorio}' ainda não apareceu.")
                 elif status == "Executado":
                     log(f"[OK] Relatório '{relatorio}' está pronto para download.")
                     break
                 elif status == "Crítico":
-                    log(f"[ERRO] Relatório '{relatorio}' CRÍTICO. Reexecutando...")
-                    criticos += 1
+                    criticos_por_relatorio[relatorio] += 1
+                    log(f"[ERRO] '{relatorio}' CRÍTICO (vez {criticos_por_relatorio[relatorio]} no ciclo).")
+                    if criticos_por_relatorio[relatorio] >= 3:
+                        relatorio_estourado = relatorio
+                        break
                     executar_relatorio(driver, relatorio)
                     break
                 else:
                     log(f"[AGUARDANDO] Status atual: '{status}' → '{relatorio}'. Nova tentativa em 10s...")
                 time.sleep(10)
+
+            if relatorio_estourado:
+                break
+
             if not linha:
                 log(f"[ERRO] Relatório '{relatorio}' não encontrado após {timeout_status} segundos.")
                 break
+
             if status != "Executado":
-                if tentativa == 1:
-                    log(f"[REAVISO] Tentando reexecutar o relatório '{relatorio}' por falha/timeout.")
-                    continue
-                else:
-                    log(f"[ERRO] '{relatorio}' falhou novamente após reprocessamento.")
-                    break
+                continue
+
             try:
                 botao_download = linha.find_element(By.XPATH, ".//a[contains(@class, 'blue') and contains(@href, '/download-file/')]")
             except Exception as e:
                 log(f"[ERRO] Botão de download não encontrado para '{relatorio}': {e}")
                 break
-            if "Rastre" in relatorio:
-                nome_final = "Rastreabilidade"
-            elif "Hist" in relatorio:
-                nome_final = "Histórico Transações"
-            else:
-                nome_final = "Estoque Detalhado"
-            caminho_salvo = baixar_e_mover_relatorio(driver=driver, botao_download_webelement=botao_download, nome_relatorio=nome_final, destino_dir=destino_dir, download_dir=None)
+
+            nome_final = (
+                "Rastreabilidade" if "Rastre" in relatorio
+                else ("Histórico Transações" if "Hist" in relatorio else "Estoque Detalhado")
+            )
+            caminho_salvo = baixar_e_mover_relatorio(
+                driver=driver,
+                botao_download_webelement=botao_download,
+                nome_relatorio=nome_final,
+                destino_dir=destino_dir,
+                download_dir=None
+            )
             if caminho_salvo:
                 log(f"[OK] '{relatorio}' salvo em: {caminho_salvo}")
                 break
             else:
-                log(f"[ERRO] Falha ao salvar '{relatorio}'.")
-                if tentativa == 1:
-                    executar_relatorio(driver, relatorio)
-                    continue
-                break
+                log(f"[ERRO] Falha ao salvar '{relatorio}'. Reexecutando…")
+                executar_relatorio(driver, relatorio)
+
+        if relatorio_estourado:
+            break
+
     try:
         safe_click(driver, (By.XPATH, "//a[@class='logo' and @ui-sref='home']"), "Botão Home")
         time.sleep(5)
     except Exception as e:
         log(f"[AVISO] Retorno à Home falhou: {e}")
-    return True, criticos
+
+    return True, criticos_por_relatorio, relatorio_estourado
 
 def ler_csv_corretamente(csv_path):
     log(f"Processando arquivo: {os.path.basename(csv_path)}")
@@ -903,6 +920,7 @@ def _wait_next_cycle(total_seconds: int) -> bool:
 
 def background_loop():
     global driver, loop_count, criticos_consecutivos
+
     try:
         if driver is None:
             log("Inicializando navegador...")
@@ -929,26 +947,55 @@ def background_loop():
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
 
-            ok, criticos = baixar_relatorios_mais_recentes(driver, destino_dir=fonte_dir, timeout_status=600)
-            criticos_consecutivos = criticos_consecutivos + 1 if criticos > 0 else 0
+            ok, criticos_map, rel_estourado = baixar_relatorios_mais_recentes(
+                driver, destino_dir=fonte_dir, timeout_status=600
+            )
 
-            if criticos_consecutivos >= 3:
-                log("[ALERTA] 3 loops seguidos com 'Crítico' → entrando em modo de segurança (halted).", "warning")
-                _state["last_error"] = "3 críticos seguidos"
-                _state["halted"] = True
-                while _state["halted"] and not stop_event.is_set():
-                    save_status({"fase": "critico_halt"})
-                    time.sleep(1)
-                criticos_consecutivos = 0
-                continue
+            if rel_estourado:
+                msg = (f"Relatório '{rel_estourado}' atingiu CRÍTICO 3x "
+                       f"no MESMO ciclo. Mapa: {json.dumps(criticos_map, ensure_ascii=False)}")
+                log(f"[ALERTA] {msg}", "warning")
+                _state["last_error"] = msg
+                save_status({"fase": "critico_mesmo_ciclo"})
 
+                try:
+                    enviar_relatorio_email(
+                        assunto=f"[Auditoria 24x7] CRÍTICO 3x — {rel_estourado} ({dt.now().strftime('%d/%m/%Y %H:%M')})",
+                        corpo=msg
+                    )
+                except Exception as e:
+                    log(f"[EMAIL] Falha ao enviar alerta: {e}")
+
+                try:
+                    if driver is not None:
+                        log("[RECUP] Reiniciando WebDriver…")
+                        try:
+                            driver.quit()
+                        except:
+                            pass
+                        driver = None
+
+                    preparar_driver()
+                    driver.get(URL)
+                    login_sgr()
+                    save_status({"fase": "pos_recuperacao"})
+                    continue  
+                except Exception as e2:
+                    log(f"[RECUP] Falha na recriação do driver: {e2}", "error")
+                    try:
+                        enviar_relatorio_email(
+                            assunto=f"[Auditoria 24x7] Recuperação falhou — reiniciando app",
+                            corpo=str(e2)
+                        )
+                    except:
+                        pass
+                    restart_program()  
 
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
             loop_count += 1
 
             save_status({"fase": "idle"})
-
             try:
                 timer_label.configure(text=f"Próximo loop em: {loop_interval} s")
                 progress_bar.set(0)
@@ -956,14 +1003,45 @@ def background_loop():
                 pass
 
             if _wait_next_cycle(loop_interval):
-                break  
-
+                break
 
         except Exception as e:
             _state["last_error"] = str(e)
             log(f"[FALHA LOOP] {e}", "error")
             save_status({"fase": "erro_loop"})
-            break
+
+            try:
+                enviar_relatorio_email(
+                    assunto=f"[Auditoria 24x7] Falha no loop — tentativa de auto-recuperação",
+                    corpo=str(e)
+                )
+            except Exception as ee:
+                log(f"[EMAIL] Falha ao enviar alerta de erro: {ee}")
+
+            try:
+                if driver is not None:
+                    log("[RECUP] Fechando driver atual…")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    driver = None
+                log("[RECUP] Recriando driver e refazendo login…")
+                preparar_driver()
+                driver.get(URL)
+                login_sgr()
+                save_status({"fase": "pos_recuperacao_erro"})
+                continue  
+            except Exception as e2:
+                log(f"[RECUP] Falhou recriação do driver: {e2}", "error")
+                try:
+                    enviar_relatorio_email(
+                        assunto=f"[Auditoria 24x7] Recuperação falhou — reiniciando app",
+                        corpo=str(e2)
+                    )
+                except:
+                    pass
+                restart_program() 
 
     try:
         progress_bar.set(0)
