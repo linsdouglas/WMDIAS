@@ -918,16 +918,126 @@ def _wait_next_cycle(total_seconds: int) -> bool:
 
     return False
 
+def _wait_for(driver, locator, timeout=12, cond="visible"):
+    condmap = {
+        "visible": EC.visibility_of_element_located,
+        "present": EC.presence_of_element_located,
+        "clickable": EC.element_to_be_clickable,
+    }
+    try:
+        WebDriverWait(driver, timeout).until(condmap[cond](locator))
+        return True
+    except Exception:
+        return False
+
+LOGIN_USER = (By.XPATH, "//input[@type='text' and @name='username']")
+LOGIN_PASS = (By.XPATH, "//input[@type='password' and @name='password']")
+MENU_LOG  = (By.XPATH, "//div[@class='ui dropdown item' and contains(text(),'Logística/Faturamento')]")
+
+def _probe_post_open(driver, timeout=15):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if _wait_for(driver, MENU_LOG, timeout=1, cond="present"):
+            return "menu"
+        if _wait_for(driver, LOGIN_USER, timeout=1, cond="present"):
+            return "login"
+        time.sleep(0.5)
+    return "none"
+
+def restart_and_probe(max_prelogin_retries=3):
+    global driver
+
+    def _recreate():
+        global driver
+        try:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            driver = None
+            preparar_driver()
+            driver.get(URL)
+            return True
+        except Exception as e:
+            log(f"[RECUP] Falha recriando driver: {e}", "error")
+            return False
+
+    prelogin_attempts = 0
+    while prelogin_attempts < max_prelogin_retries:
+        prelogin_attempts += 1
+        log(f"[RECUP] (tentativa {prelogin_attempts}/{max_prelogin_retries}) Reiniciando navegador e abrindo URL…")
+        if not _recreate():
+            return "restart_failed"
+
+        state = _probe_post_open(driver, timeout=15)
+        log(f"[RECUP] Estado após abrir: {state}")
+
+        if state == "menu":
+            return "ok"
+
+        if state == "login":
+            try:
+                login_sgr()
+            except Exception as e:
+                log(f"[LOGIN] Exceção inesperada no login: {e}", "error")
+
+            if _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
+                log("[LOGIN] Login ok, menu visível.")
+                return "ok"
+            else:
+                log("[LOGIN] Login efetuado, porém o menu 'Logística/Faturamento' não apareceu. Encerrando processo.", "error")
+                try:
+                    enviar_relatorio_email(
+                        assunto="[Auditoria 24x7] Erro de login — menu não apareceu",
+                        corpo="Login executado, porém o menu 'Logística/Faturamento' não ficou disponível. Processo será encerrado para verificação."
+                    )
+                except Exception as e:
+                    log(f"[EMAIL] Falha ao enviar alerta de login: {e}")
+                return "login_failed"
+
+        log("[SGR] Não carregou login nem menu (provável indisponibilidade).", "warning")
+        if prelogin_attempts < max_prelogin_retries:
+            time.sleep(5)  
+            continue
+
+        try:
+            enviar_relatorio_email(
+                assunto="[Auditoria 24x7] SGR indisponível antes do login",
+                corpo="O sistema não apresentou tela de login nem o menu principal após 3 tentativas de reinício. O processo será pausado aguardando retorno."
+            )
+        except Exception as e:
+            log(f"[EMAIL] Falha ao enviar alerta de indisponibilidade: {e}")
+        _state["paused"] = True
+        save_status({"fase": "sgr_problem_paused"})
+        log("[SGR] Indisponibilidade persistente — processo pausado aguardando sua intervenção.", "warning")
+        return "sgr_down_paused"
+
 def background_loop():
     global driver, loop_count, criticos_consecutivos
-
     try:
         if driver is None:
             log("Inicializando navegador...")
             preparar_driver()
         driver.get(URL)
-        log("Abrindo URL e tentando login...")
-        login_sgr()
+        log("Abrindo URL e checando estado…")
+
+        state = _probe_post_open(driver, timeout=15)
+        if state == "login":
+            log("Tela de login detectada — efetuando login…")
+            login_sgr()
+            if not _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
+                log("[FATAL] Login concluído mas menu não apareceu no setup inicial. Encerrando.", "error")
+                save_status({"fase": "login_failed"})
+                return
+        elif state == "menu":
+            log("Menu principal visível — prosseguindo.")
+        else:
+            log("[SGR] Indisponível no setup inicial — vou tentar recovery controlado.", "warning")
+            res = restart_and_probe(max_prelogin_retries=3)
+            if res != "ok":
+                return  
+
         save_status({"fase": "pos_login"})
         log("Executando relatórios...")
         interacoes_sgr(driver)
@@ -966,30 +1076,27 @@ def background_loop():
                 except Exception as e:
                     log(f"[EMAIL] Falha ao enviar alerta: {e}")
 
-                try:
-                    if driver is not None:
-                        log("[RECUP] Reiniciando WebDriver…")
-                        try:
-                            driver.quit()
-                        except:
-                            pass
-                        driver = None
-
-                    preparar_driver()
-                    driver.get(URL)
-                    login_sgr()
+                result = restart_and_probe(max_prelogin_retries=3)
+                if result == "ok":
                     save_status({"fase": "pos_recuperacao"})
-                    continue  
-                except Exception as e2:
-                    log(f"[RECUP] Falha na recriação do driver: {e2}", "error")
+                    continue
+                elif result == "login_failed":
+                    save_status({"fase": "login_failed"})
+                    log("[FATAL] Erro de login confirmado. Parando processo.", "error")
+                    stop_event.set()
+                    break
+                elif result == "sgr_down_paused":
+                    break
+                else:
+                    log("[RECUP] Falha geral ao reiniciar. Reiniciando aplicação.", "error")
                     try:
                         enviar_relatorio_email(
-                            assunto=f"[Auditoria 24x7] Recuperação falhou — reiniciando app",
-                            corpo=str(e2)
+                            assunto="[Auditoria 24x7] Recuperação falhou — reiniciando app",
+                            corpo="restart_and_probe retornou 'restart_failed'."
                         )
                     except:
                         pass
-                    restart_program()  
+                    restart_program()
 
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
@@ -1018,36 +1125,34 @@ def background_loop():
             except Exception as ee:
                 log(f"[EMAIL] Falha ao enviar alerta de erro: {ee}")
 
-            try:
-                if driver is not None:
-                    log("[RECUP] Fechando driver atual…")
-                    try:
-                        driver.quit()
-                    except:
-                        pass
-                    driver = None
-                log("[RECUP] Recriando driver e refazendo login…")
-                preparar_driver()
-                driver.get(URL)
-                login_sgr()
+            result = restart_and_probe(max_prelogin_retries=3)
+            if result == "ok":
                 save_status({"fase": "pos_recuperacao_erro"})
-                continue  
-            except Exception as e2:
-                log(f"[RECUP] Falhou recriação do driver: {e2}", "error")
+                continue
+            elif result == "login_failed":
+                save_status({"fase": "login_failed"})
+                log("[FATAL] Erro de login confirmado. Parando processo.", "error")
+                stop_event.set()
+                break
+            elif result == "sgr_down_paused":
+                break
+            else:
+                log("[RECUP] Falha geral ao reiniciar. Reiniciando aplicação.", "error")
                 try:
                     enviar_relatorio_email(
-                        assunto=f"[Auditoria 24x7] Recuperação falhou — reiniciando app",
-                        corpo=str(e2)
+                        assunto="[Auditoria 24x7] Recuperação falhou — reiniciando app",
+                        corpo="restart_and_probe retornou 'restart_failed'."
                     )
                 except:
                     pass
-                restart_program() 
+                restart_program()
 
     try:
         progress_bar.set(0)
         timer_label.configure(text="Próximo loop em: 0 s")
     except:
         pass
+
 
 
 def iniciar_processo():
