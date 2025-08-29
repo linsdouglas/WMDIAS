@@ -162,7 +162,6 @@ def watch_commands():
         time.sleep(5)
 
 
-
 def encontrar_pasta_onedrive_empresa():
     user_dir = os.environ["USERPROFILE"]
     possiveis = os.listdir(user_dir)
@@ -175,20 +174,12 @@ def encontrar_pasta_onedrive_empresa():
 
 fonte_dir = encontrar_pasta_onedrive_empresa()
 
-# === Caminhos base (OneDrive) ===
-BASE_DIR = fonte_dir or os.path.join(
-    os.environ.get("USERPROFILE", ""),
-    "OneDrive - M DIAS BRANCO",
-    "Gestão de Estoque - Gestão_Auditoria"
-)
-os.makedirs(BASE_DIR, exist_ok=True)
-
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_DIR = os.path.join(fonte_dir, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_PATH = os.path.join(LOG_DIR, "app.log")
-STATUS_PATH = os.path.join(BASE_DIR, "status.json")
-COMMANDS_PATH = os.path.join(BASE_DIR, "commands.json")
+STATUS_PATH = os.path.join(fonte_dir, "status.json")
+COMMANDS_PATH = os.path.join(fonte_dir, "commands.json")
 
 if not os.path.exists(COMMANDS_PATH):
     try:
@@ -679,43 +670,65 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     arquivos = os.listdir(fonte_dir)
     rastreabilidade_files = [f for f in arquivos if 'rastreabilidade' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
     historico_files = [f for f in arquivos if 'historico_transacoes' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
+    
     if not rastreabilidade_files or not historico_files:
         log("Arquivos de rastreabilidade/histórico não encontrados.")
         return None
+    
+    try:
+        test_file = os.path.join(fonte_dir, "test_write.tmp")
+        with open(test_file, 'w') as f:
+            f.write("test")
+        os.remove(test_file)
+        log("[PERMISSÃO] Permissão de escrita OK")
+    except Exception as e:
+        log(f"[ERRO] Sem permissão de escrita na pasta: {e}")
+        return None
+    
     rastreabilidade_path = os.path.join(fonte_dir, max(rastreabilidade_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
     historico_path = os.path.join(fonte_dir, max(historico_files, key=lambda x: os.path.getmtime(os.path.join(fonte_dir, x))))
-    auditoria_path = os.path.join(fonte_dir, "auditoria_24_7.xlsx")
+    
     log("Carregando arquivo de rastreabilidade...")
     df_rastreabilidade = _load_table(rastreabilidade_path)
     log("Carregando arquivo de histórico de transações...")
     df_historico = _load_table(historico_path)
+    
     coluna_rastreio = None
     for col in df_rastreabilidade.columns:
         if 'COD_RASTREABILIDADE' in col.upper():
             coluna_rastreio = col
             break
+    
     if not coluna_rastreio:
         log("Coluna COD_RASTREABILIDADE não encontrada.")
         return None
+    
     coluna_pallet = _pick_col(df_historico, ["CHAVE_PALLET","CHAVE_PALLETE"])
     if not coluna_pallet:
         log("Coluna CHAVE_PALLET não encontrada no histórico.")
         return None
+    
     log("Aplicando filtro MES para rastreabilidade e histórico...")
     df_rastreabilidade = filtrar_chaves_mes(df_rastreabilidade, coluna_rastreio)
     df_historico = filtrar_chaves_mes(df_historico, coluna_pallet)
+    
     log("Calculando última movimentação e flags...")
     df_ultimos = _preparar_ultimos_movimentos(df_historico)
+    
+    auditoria_path = os.path.join(fonte_dir, "auditoria_24_7.xlsx")
+    
     if os.path.exists(auditoria_path):
         try:
             df_auditoria_existente = pd.read_excel(auditoria_path)
             ja_auditadas = set(df_auditoria_existente['chave_pallete'].astype(str).str.strip().tolist())
-        except:
+        except Exception as e:
+            log(f"[AVISO] Erro ao ler auditoria existente: {e}. Criando nova.")
             df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida'])
             ja_auditadas = set()
     else:
         df_auditoria_existente = pd.DataFrame(columns=['chave_pallete','status','created_at_ultimo','TIPO_MOVIMENTO_ULTIMO','MOTIVO_ULTIMO','tem_remessa_saida'])
         ja_auditadas = set()
+    
     codigos_rastreabilidade = [
         str(codigo).strip()
         for codigo in df_rastreabilidade[coluna_rastreio].unique()
@@ -793,7 +806,47 @@ def analisar_rastreabilidade_incremental(fonte_dir):
     else:
         df_final = df_calc.copy()
 
-    df_final.to_excel(auditoria_path, index=False)
+    log(f"[DEBUG] DataFrame final tem {len(df_final)} linhas")
+    log(f"[DEBUG] Primeiras 5 chaves: {df_final['chave_pallete'].head(5).tolist()}")
+    
+    chaves_df = set(df_final['chave_pallete'].astype(str).str.strip())
+    if 'M431108450603990020M' in chaves_df:
+        log(f"[DEBUG] Chave M431108450603990020M encontrada no DataFrame")
+    else:
+        log(f"[DEBUG] Chave M431108450603990020M NÃO encontrada no DataFrame")
+        chaves_novos = set(df_novos['chave_pallete'].astype(str).str.strip())
+        if 'M431108450603990020M' in chaves_novos:
+            log(f"[DEBUG] Mas está em df_novos!")
+        else:
+            log(f"[DEBUG] Também não está em df_novos!")
+
+    try:
+        df_final.to_excel(auditoria_path, index=False)
+        size = os.path.getsize(auditoria_path)
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(auditoria_path)))
+        log(f"[AUDITORIA] Gravado: {auditoria_path} | linhas={len(df_final)} | size={size} | mtime={mtime}")
+        
+        if os.path.exists(auditoria_path):
+            try:
+                df_verificacao = pd.read_excel(auditoria_path)
+                log(f"[VERIFICAÇÃO] Arquivo salvo com {len(df_verificacao)} linhas")
+                
+                chaves_salvas = set(df_verificacao['chave_pallete'].astype(str).str.strip())
+                if 'M431108450603990020M' in chaves_salvas:
+                    log(f"[VERIFICAÇÃO] Chave M431108450603990020M encontrada no arquivo salvo")
+                else:
+                    log(f"[VERIFICAÇÃO] Chave M431108450603990020M NÃO encontrada no arquivo salvo")
+            except Exception as e:
+                log(f"[ERRO] Falha ao verificar arquivo salvo: {e}")
+        else:
+            log(f"[ERRO CRÍTICO] Arquivo de auditoria não foi criado: {auditoria_path}")
+            
+    except Exception as e:
+        log(f"[ERRO CRÍTICO] Falha ao salvar auditoria: {e}")
+        import traceback
+        log(traceback.format_exc())
+        return None
+
     total = len(df_final)
     novos = len(df_novos)
     nao_encontrados = (df_novos['status'] == 'NÃO ENCONTRADO MOVIMENTAÇÃO').sum()
