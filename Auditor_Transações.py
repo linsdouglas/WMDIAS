@@ -30,6 +30,8 @@ URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
 ITEM_DEPOSITO = "LA01"
 TIMEOUT = 15
+LOGIN_MENU_MAX_RETRIES = 3
+LOGIN_MENU_RETRY_DELAY = 600  
 
 stop_event = threading.Event()
 bg_thread = None
@@ -118,6 +120,37 @@ def restart_program():
     else:
         python = sys.executable
         os.execl(python, python, *sys.argv)
+def graceful_restart():
+    try:
+        stop_event.set()
+    except: 
+        pass
+    try:
+        if driver is not None:
+            driver.quit()
+    except:
+        pass
+
+    try:
+        for h in list(logger.handlers):
+            try:
+                h.flush()
+                h.close()
+            except:
+                pass
+            try:
+                logger.removeHandler(h)
+            except:
+                pass
+    except:
+        pass
+    try:
+        janela.destroy()
+    except:
+        pass
+    time.sleep(0.3)
+    restart_program()
+
 def apply_command(cmd: str):
     cmd = (cmd or "").strip().lower()
     if cmd == "pause":
@@ -135,8 +168,10 @@ def apply_command(cmd: str):
         _state["kick"] = True
     elif cmd == "restart":
         log("Comando: RESTART (reiniciando processo)")
-        restart_program()
-
+        try:
+            janela.after(50, graceful_restart)
+        except:
+            graceful_restart()
     elif cmd == "reload_config":
         log("Comando: RELOAD_CONFIG (implementar leitura de .env/.ini)")
     else:
@@ -997,6 +1032,26 @@ def _probe_post_open(driver, timeout=15):
         time.sleep(0.5)
     return "none"
 
+def _login_then_expect_menu_or_retry(max_retries=LOGIN_MENU_MAX_RETRIES, delay=LOGIN_MENU_RETRY_DELAY):
+
+    for attempt in range(1, max_retries + 1):
+        log(f"[LOGIN] Tentativa {attempt}/{max_retries} — efetuando login e aguardando menu…")
+        try:
+            login_sgr()
+        except Exception as e:
+            log(f"[LOGIN] Exceção inesperada no login: {e}", "error")
+
+        if _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
+            log("[LOGIN] Menu visível após login.")
+            return "ok"
+
+        log(f"[LOGIN] Login concluído mas menu não apareceu. Aguardando {delay}s para nova tentativa…", "warning")
+        time.sleep(delay)
+
+    log("[LOGIN] Menu não apareceu após múltiplas tentativas.", "error")
+    return "login_menu_missing"
+
+
 def restart_and_probe(max_prelogin_retries=3):
     global driver
 
@@ -1030,30 +1085,23 @@ def restart_and_probe(max_prelogin_retries=3):
             return "ok"
 
         if state == "login":
-            try:
-                login_sgr()
-            except Exception as e:
-                log(f"[LOGIN] Exceção inesperada no login: {e}", "error")
-
-            if _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
-                log("[LOGIN] Login ok, menu visível.")
+            result_login = _login_then_expect_menu_or_retry()
+            if result_login == "ok":
                 return "ok"
             else:
-                log("[LOGIN] Login efetuado, porém o menu 'Logística/Faturamento' não apareceu. Encerrando processo.", "error")
                 try:
                     enviar_relatorio_email(
-                        assunto="[Auditoria 24x7] Erro de login — menu não apareceu",
-                        corpo="Login executado, porém o menu 'Logística/Faturamento' não ficou disponível. Processo será encerrado para verificação."
+                        assunto="[Auditoria 24x7] Erro de login — menu não apareceu (pausado)",
+                        corpo=(f"O login foi realizado, porém o menu 'Logística/Faturamento' "
+                               f"não apareceu após {LOGIN_MENU_MAX_RETRIES} tentativas "
+                               f"com intervalos de {LOGIN_MENU_RETRY_DELAY//60} minutos. "
+                               f"O processo foi PAUSADO. Envie 'resume' quando quiser retomar.")
                     )
                 except Exception as e:
                     log(f"[EMAIL] Falha ao enviar alerta de login: {e}")
-                return "login_failed"
-
-        log("[SGR] Não carregou login nem menu (provável indisponibilidade).", "warning")
-        if prelogin_attempts < max_prelogin_retries:
-            time.sleep(5)  
-            continue
-
+                _state['paused'] = True
+                save_status({"fase": "login_failed_paused"})
+                return "login_failed_paused"
         try:
             enviar_relatorio_email(
                 assunto="[Auditoria 24x7] SGR indisponível antes do login",
@@ -1078,10 +1126,9 @@ def background_loop():
         state = _probe_post_open(driver, timeout=15)
         if state == "login":
             log("Tela de login detectada — efetuando login…")
-            login_sgr()
-            if not _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
-                log("[FATAL] Login concluído mas menu não apareceu no setup inicial. Encerrando.", "error")
-                save_status({"fase": "login_failed"})
+            result_login = _login_then_expect_menu_or_retry()
+            if result_login != "ok":
+                save_status({"fase": "login_failed_paused"})
                 return
         elif state == "menu":
             log("Menu principal visível — prosseguindo.")
@@ -1183,9 +1230,6 @@ def background_loop():
                 save_status({"fase": "pos_recuperacao_erro"})
                 continue
             elif result == "login_failed":
-                save_status({"fase": "login_failed"})
-                log("[FATAL] Erro de login confirmado. Parando processo.", "error")
-                stop_event.set()
                 break
             elif result == "sgr_down_paused":
                 break
@@ -1205,8 +1249,6 @@ def background_loop():
         timer_label.configure(text="Próximo loop em: 0 s")
     except:
         pass
-
-
 
 def iniciar_processo():
     global bg_thread, global_username, global_password
