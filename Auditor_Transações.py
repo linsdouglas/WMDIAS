@@ -25,7 +25,6 @@ import logging, logging.handlers
 import json
 import sys
 
-
 URL = "https://prod12cwlsistemas.mdb.com.br/sgr/#!/home"
 ITEM_FILIAL = "M431 - Divisao Vitarella - Logistico"
 ITEM_DEPOSITO = "LA01"
@@ -38,6 +37,7 @@ bg_thread = None
 loop_interval = 600
 loop_count = 0
 criticos_consecutivos = 0
+falhas_navegacao = 0
 driver = None
 global_username = ""
 global_password = ""
@@ -361,13 +361,19 @@ def executar_relatorio_estoque(driver):
 def interacoes_sgr(driver):
     driver.fullscreen_window()
     actions = ActionChains(driver)
-    abrir_menu_relatorio(driver, actions, "Rastreabilidade")
+    ok = abrir_menu_relatorio(driver, actions, "Rastreabilidade")
+    if not ok:
+        raise Exception("Falha ao abrir Rastreabilidade")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver)
-    abrir_menu_relatorio(driver, actions, "Histórico Transações")
+    ok = abrir_menu_relatorio(driver, actions, "Histórico Transações")
+    if not ok:
+        raise Exception("Falha ao abrir Histórico Transações")
     selecionar_unidade_embarcadora(driver)
     preencher_datas_e_executar(driver, dias_passado=30)
-    abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
+    ok = abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
+    if not ok:
+        raise Exception("Falha ao abrir Estoque Detalhado")
     selecionar_unidade_embarcadora(driver)
     executar_relatorio_estoque(driver)
     return True
@@ -1153,50 +1159,39 @@ def background_loop():
             time.sleep(2)
             continue
 
+        global falhas_navegacao
         try:
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
+            falhas_navegacao = 0  
+            ...
+        except Exception as e:
+            _state["last_error"] = str(e)
+            log(f"[ERRO NAVEGAÇÃO] {e}", "error")
+            falhas_navegacao += 1
 
-            ok, criticos_map, rel_estourado = baixar_relatorios_mais_recentes(
-                driver, destino_dir=fonte_dir, timeout_status=600
-            )
-
-            if rel_estourado:
-                msg = (f"Relatório '{rel_estourado}' atingiu CRÍTICO 3x "
-                       f"no MESMO ciclo. Mapa: {json.dumps(criticos_map, ensure_ascii=False)}")
-                log(f"[ALERTA] {msg}", "warning")
-                _state["last_error"] = msg
-                save_status({"fase": "critico_mesmo_ciclo"})
-
+            if falhas_navegacao >= 3:
+                log("[ERRO NAVEGAÇÃO] 3 falhas seguidas. Fechando navegador e aguardando 10 minutos" \
+                " antes de tentar de novo.", "error")
                 try:
-                    enviar_relatorio_email(
-                        assunto=f"[Auditoria 24x7] CRÍTICO 3x — {rel_estourado} ({dt.now().strftime('%d/%m/%Y %H:%M')})",
-                        corpo=msg
-                    )
-                except Exception as e:
-                    log(f"[EMAIL] Falha ao enviar alerta: {e}")
+                    if driver:
+                        driver.quit()
+                        driver = None
+                except:
+                    driver = None
+                time.sleep(600)  
+                falhas_navegacao = 0
+                continue  
 
-                result = restart_and_probe(max_prelogin_retries=3)
-                if result == "ok":
-                    save_status({"fase": "pos_recuperacao"})
-                    continue
-                elif result == "login_failed":
-                    save_status({"fase": "login_failed"})
-                    log("[FATAL] Erro de login confirmado. Parando processo.", "error")
-                    stop_event.set()
-                    break
-                elif result == "sgr_down_paused":
-                    break
-                else:
-                    log("[RECUP] Falha geral ao reiniciar. Reiniciando aplicação.", "error")
-                    try:
-                        enviar_relatorio_email(
-                            assunto="[Auditoria 24x7] Recuperação falhou — reiniciando app",
-                            corpo="restart_and_probe retornou 'restart_failed'."
-                        )
-                    except:
-                        pass
-                    restart_program()
+            save_status({"fase": "erro_navegacao"})
+            result = restart_and_probe(max_prelogin_retries=3)
+            if result == "ok":
+                save_status({"fase": "pos_recuperacao_erro"})
+                continue
+            elif result in ("login_failed", "sgr_down_paused", "login_failed_paused"):
+                break
+            else:
+                restart_program()
 
             log("Iniciando análise incremental...")
             _ = analisar_rastreabilidade_incremental(fonte_dir)
