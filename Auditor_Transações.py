@@ -692,10 +692,9 @@ def _preparar_ultimos_movimentos(df_hist):
 
     return pd.DataFrame(registros)
 
-
 def filtrar_chaves_mes(df, coluna_chave):
     chaves = df[coluna_chave].astype(str).str.strip()
-    mascara = chaves.str.startswith('M431') & chaves.str.endswith('M')
+    mascara = chaves.str.startswith('M431')
     return df[mascara].copy()
 def _load_table(path):
     log(f"Carregando arquivo: {os.path.basename(path)}")
