@@ -1120,7 +1120,8 @@ def restart_and_probe(max_prelogin_retries=3):
         return "sgr_down_paused"
 
 def background_loop():
-    global driver, loop_count, criticos_consecutivos
+    global driver, loop_count, criticos_consecutivos, falhas_navegacao
+
     try:
         if driver is None:
             log("Inicializando navegador...")
@@ -1141,11 +1142,12 @@ def background_loop():
             log("[SGR] Indisponível no setup inicial — vou tentar recovery controlado.", "warning")
             res = restart_and_probe(max_prelogin_retries=3)
             if res != "ok":
-                return  
+                return
 
         save_status({"fase": "pos_login"})
-        log("Executando relatórios...")
+        log("Executando relatórios (setup inicial)...")
         interacoes_sgr(driver)
+
     except Exception as e:
         _state["last_error"] = str(e)
         log(f"[ERRO] Setup inicial: {e}", "error")
@@ -1158,20 +1160,66 @@ def background_loop():
             time.sleep(2)
             continue
 
-        global falhas_navegacao
         try:
             log("Executando relatórios para novo ciclo...")
             interacoes_sgr(driver)
             falhas_navegacao = 0  
-            ...
+
+            ok, criticos_map, rel_estourado = baixar_relatorios_mais_recentes(
+                driver, destino_dir=fonte_dir, timeout_status=600
+            )
+
+            if rel_estourado:
+                msg = (f"Relatório '{rel_estourado}' atingiu CRÍTICO 3x no MESMO ciclo. "
+                       f"Mapa: {json.dumps(criticos_map, ensure_ascii=False)}")
+                log(f"[ALERTA] {msg}", "warning")
+                _state["last_error"] = msg
+                save_status({"fase": "critico_mesmo_ciclo"})
+                try:
+                    enviar_relatorio_email(
+                        assunto=f"[Auditoria 24x7] CRÍTICO 3x — {rel_estourado} ({dt.now().strftime('%d/%m/%Y %H:%M')})",
+                        corpo=msg
+                    )
+                except Exception as e:
+                    log(f"[EMAIL] Falha ao enviar alerta: {e}")
+
+                result = restart_and_probe(max_prelogin_retries=3)
+                if result == "ok":
+                    save_status({"fase": "pos_recuperacao"})
+                    continue
+                elif result in ("login_failed", "sgr_down_paused", "login_failed_paused"):
+                    break
+                else:
+                    log("[RECUP] Falha geral ao reiniciar. Reiniciando aplicação.", "error")
+                    try:
+                        enviar_relatorio_email(
+                            assunto="[Auditoria 24x7] Recuperação falhou — reiniciando app",
+                            corpo="restart_and_probe retornou 'restart_failed'."
+                        )
+                    except:
+                        pass
+                    restart_program()
+
+            log("Iniciando análise incremental...")
+            _ = analisar_rastreabilidade_incremental(fonte_dir)
+            loop_count += 1
+            save_status({"fase": "idle"})
+
+            try:
+                timer_label.configure(text=f"Próximo loop em: {loop_interval} s")
+                progress_bar.set(0)
+            except:
+                pass
+            if _wait_next_cycle(loop_interval):
+                break
+
         except Exception as e:
             _state["last_error"] = str(e)
             log(f"[ERRO NAVEGAÇÃO] {e}", "error")
             falhas_navegacao += 1
 
             if falhas_navegacao >= 3:
-                log("[ERRO NAVEGAÇÃO] 3 falhas seguidas. Fechando navegador e aguardando 10 minutos" \
-                " antes de tentar de novo.", "error")
+                log("[ERRO NAVEGAÇÃO] 3 falhas seguidas. Fechando navegador e aguardando 10 minutos antes de tentar de novo.", "error")
                 try:
                     if driver:
                         driver.quit()
@@ -1180,52 +1228,18 @@ def background_loop():
                     driver = None
                 time.sleep(600)  
                 falhas_navegacao = 0
-                continue  
-
+                try:
+                    preparar_driver()
+                    driver.get(URL)
+                except Exception as e2:
+                    log(f"[RECUP] Falha ao recriar driver após espera: {e2}", "error")
+                continue
             save_status({"fase": "erro_navegacao"})
             result = restart_and_probe(max_prelogin_retries=3)
             if result == "ok":
                 save_status({"fase": "pos_recuperacao_erro"})
                 continue
             elif result in ("login_failed", "sgr_down_paused", "login_failed_paused"):
-                break
-            else:
-                restart_program()
-
-            log("Iniciando análise incremental...")
-            _ = analisar_rastreabilidade_incremental(fonte_dir)
-            loop_count += 1
-
-            save_status({"fase": "idle"})
-            try:
-                timer_label.configure(text=f"Próximo loop em: {loop_interval} s")
-                progress_bar.set(0)
-            except:
-                pass
-
-            if _wait_next_cycle(loop_interval):
-                break
-
-        except Exception as e:
-            _state["last_error"] = str(e)
-            log(f"[FALHA LOOP] {e}", "error")
-            save_status({"fase": "erro_loop"})
-
-            try:
-                enviar_relatorio_email(
-                    assunto=f"[Auditoria 24x7] Falha no loop — tentativa de auto-recuperação",
-                    corpo=str(e)
-                )
-            except Exception as ee:
-                log(f"[EMAIL] Falha ao enviar alerta de erro: {ee}")
-
-            result = restart_and_probe(max_prelogin_retries=3)
-            if result == "ok":
-                save_status({"fase": "pos_recuperacao_erro"})
-                continue
-            elif result == "login_failed":
-                break
-            elif result == "sgr_down_paused":
                 break
             else:
                 log("[RECUP] Falha geral ao reiniciar. Reiniciando aplicação.", "error")
@@ -1237,12 +1251,12 @@ def background_loop():
                 except:
                     pass
                 restart_program()
-
     try:
         progress_bar.set(0)
         timer_label.configure(text="Próximo loop em: 0 s")
     except:
         pass
+
 
 def iniciar_processo():
     global bg_thread, global_username, global_password
