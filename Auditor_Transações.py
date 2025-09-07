@@ -113,6 +113,43 @@ def save_status(extra=None):
     except Exception as e:
         log(f"[STATUS] Falha ao salvar: {e}", "warning")
 
+def _sleep_interruptible(total_seconds: int, label: str = ""):
+
+    remaining = total_seconds
+    while remaining > 0:
+        if stop_event.is_set():
+            log(f"[SLEEP] Interrompido por stop_event durante: {label or f'{total_seconds}s'}")
+            return True
+        if _state.get("kick"):
+            _state["kick"] = False
+            log(f"[SLEEP] Interrompido por comando (kick) durante: {label or f'{total_seconds}s'}")
+            return True
+        if _state.get("paused"):
+            save_status({"fase": "paused"})
+            time.sleep(1)
+            continue
+        time.sleep(1)
+        remaining -= 1
+    return False
+
+
+def _restart_browser_and_open() -> bool:
+    global driver
+    try:
+        if driver:
+            driver.quit()
+    except Exception:
+        pass
+    try:
+        preparar_driver()
+        driver.get(URL)
+        log("[LOGIN] Navegador reiniciado e URL aberta.")
+        return True
+    except Exception as e:
+        log(f"[LOGIN] Falha ao reiniciar navegador: {e}", "error")
+        return False
+
+
 def restart_program():
     if getattr(sys, 'frozen', False):  
         exe_path = sys.executable
@@ -1038,7 +1075,6 @@ def _probe_post_open(driver, timeout=15):
     return "none"
 
 def _login_then_expect_menu_or_retry(max_retries=LOGIN_MENU_MAX_RETRIES, delay=LOGIN_MENU_RETRY_DELAY):
-
     for attempt in range(1, max_retries + 1):
         log(f"[LOGIN] Tentativa {attempt}/{max_retries} — efetuando login e aguardando menu…")
         try:
@@ -1051,10 +1087,41 @@ def _login_then_expect_menu_or_retry(max_retries=LOGIN_MENU_MAX_RETRIES, delay=L
             return "ok"
 
         log(f"[LOGIN] Login concluído mas menu não apareceu. Aguardando {delay}s para nova tentativa…", "warning")
-        time.sleep(delay)
+        if _sleep_interruptible(delay, label="intervalo entre tentativas (bateria 1)"):
+            return "aborted"
 
-    log("[LOGIN] Menu não apareceu após múltiplas tentativas.", "error")
-    return "login_menu_missing"
+    log("[LOGIN] Menu não apareceu após múltiplas tentativas da 1ª bateria.", "error")
+
+    espera_2a_bateria = 30 * 60  
+    log(f"[LOGIN] Aguardando {espera_2a_bateria//60} minutos antes de reiniciar o navegador e iniciar a 2ª bateria…", "warning")
+    if _sleep_interruptible(espera_2a_bateria, label="janela de espera para 2ª bateria"):
+        return "aborted"
+
+    if not _restart_browser_and_open():
+        log("[LOGIN] Reinício do navegador falhou antes da 2ª bateria.", "error")
+        return "login_menu_missing_phase2"
+
+    if _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
+        log("[LOGIN] Menu visível logo após reinício, antes da 2ª bateria.")
+        return "ok"
+
+    for attempt in range(1, max_retries + 1):
+        log(f"[LOGIN][2ª bateria] Tentativa {attempt}/{max_retries} — efetuando login e aguardando menu…")
+        try:
+            login_sgr()
+        except Exception as e:
+            log(f"[LOGIN] Exceção inesperada no login (2ª bateria): {e}", "error")
+
+        if _wait_for(driver, MENU_LOG, timeout=15, cond="present"):
+            log("[LOGIN][2ª bateria] Menu visível após login.")
+            return "ok"
+
+        log(f"[LOGIN][2ª bateria] Login concluído mas menu não apareceu. Aguardando {delay}s para nova tentativa…", "warning")
+        if _sleep_interruptible(delay, label="intervalo entre tentativas (bateria 2)"):
+            return "aborted"
+
+    log("[LOGIN] Menu não apareceu após as duas baterias de tentativas.", "error")
+    return "login_menu_missing_phase2"
 
 
 def restart_and_probe(max_prelogin_retries=3):
@@ -1093,20 +1160,26 @@ def restart_and_probe(max_prelogin_retries=3):
             result_login = _login_then_expect_menu_or_retry()
             if result_login == "ok":
                 return "ok"
+            elif result_login == "aborted":
+                return "aborted"
             else:
                 try:
                     enviar_relatorio_email(
                         assunto="[Auditoria 24x7] Erro de login — menu não apareceu (pausado)",
-                        corpo=(f"O login foi realizado, porém o menu 'Logística/Faturamento' "
-                               f"não apareceu após {LOGIN_MENU_MAX_RETRIES} tentativas "
-                               f"com intervalos de {LOGIN_MENU_RETRY_DELAY//60} minutos. "
-                               f"O processo foi PAUSADO. Envie 'resume' quando quiser retomar.")
+                        corpo=(
+                            "O login foi realizado, porém o menu 'Logística/Faturamento' "
+                            f"não apareceu após 2 baterias de {LOGIN_MENU_MAX_RETRIES} tentativas cada, "
+                            f"com intervalos de {LOGIN_MENU_RETRY_DELAY//60} minutos, "
+                            "incluindo espera adicional de 30 minutos e reinício do navegador. "
+                            "O processo foi PAUSADO. Envie 'resume' quando quiser retomar."
+                        )
                     )
                 except Exception as e:
                     log(f"[EMAIL] Falha ao enviar alerta de login: {e}")
                 _state['paused'] = True
                 save_status({"fase": "login_failed_paused"})
                 return "login_failed_paused"
+
         try:
             enviar_relatorio_email(
                 assunto="[Auditoria 24x7] SGR indisponível antes do login",
