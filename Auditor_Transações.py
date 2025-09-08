@@ -260,6 +260,44 @@ def safe_click(driver, by_locator, nome_elemento="Elemento", timeout=10):
     except Exception as e:
         log(f"[ERRO] Clique: {repr(e)}")
 
+def _maybe_enter_iframe_with(btn_id="BTN_EXECUTAR"):
+    driver.switch_to.default_content()
+    if driver.find_elements(By.ID, btn_id):
+        return True
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    for fr in iframes:
+        driver.switch_to.default_content()
+        try:
+            driver.switch_to.frame(fr)
+            if driver.find_elements(By.ID, btn_id):
+                return True
+        except:
+            pass
+    driver.switch_to.default_content()
+    return False
+
+def _dismiss_overlays():
+    try:
+        driver.execute_script("""
+            const dim=document.querySelector('.dimmer.active,.ui.dimmer.visible');
+            if(dim){ dim.classList.remove('active'); dim.classList.remove('visible'); }
+        """)
+    except:
+        pass
+
+def _wait_filtro_page(timeout=25):
+    end = time.time() + timeout
+    while time.time() < end:
+        _dismiss_overlays()
+        if driver.find_elements(By.ID, "D1") or driver.find_elements(By.ID, "BTN_EXECUTAR") \
+           or driver.find_elements(By.XPATH, "//div[contains(@class,'ui selection dropdown')]//input[@class='search']"):
+            return True
+        if _maybe_enter_iframe_with("BTN_EXECUTAR"):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def quebrar_estado_e_recomeçar(driver, actions, nome_relatorio):
     try:
         safe_click(driver,(By.XPATH, "//div[@class='item ng-scope' and @alt='Estoque Detalhado']"),"Relatório Alternativo")
@@ -332,51 +370,105 @@ def selecionar_unidade_embarcadora(driver, item_embarcadora="M431"):
             time.sleep(2)
     return False
 
-def preencher_datas_e_executar(driver, dias_passado=2, dias_futuro=1):
+def _clear_and_type(el, text):
     try:
-        hoje = datetime.date.today()
-        data_final = hoje + datetime.timedelta(days=dias_futuro)
-        data_inicial = hoje - datetime.timedelta(days=dias_passado)
-        driver.find_element(By.ID, "D1").clear()
-        driver.find_element(By.ID, "D1").send_keys(data_inicial.strftime("%d/%m/%Y"))
-        driver.find_element(By.ID, "D2").clear()
-        driver.find_element(By.ID, "D2").send_keys(data_final.strftime("%d/%m/%Y"))
-        driver.find_element(By.ID, "BTN_EXECUTAR").click()
-        time.sleep(5)
+        el.click()
+        el.send_keys(Keys.CONTROL, "a")
+        el.send_keys(Keys.DELETE)
+        el.send_keys(text)
+    except Exception:
+        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input',{bubbles:true}));", el, text)
+
+def preencher_datas_e_executar(driver, dias_passado=2, dias_futuro=1):
+    _dismiss_overlays()
+    if not _wait_filtro_page(timeout=25):
+        raise Exception("Tela de filtros não carregou (D1/D2/BTN_EXECUTAR ausentes).")
+
+    hoje = datetime.date.today()
+    data_final = hoje + datetime.timedelta(days=dias_futuro)
+    data_inicial = hoje - datetime.timedelta(days=dias_passado)
+    data1 = data_inicial.strftime("%d/%m/%Y")
+    data2 = data_final.strftime("%d/%m/%Y")
+
+    try:
+        d1 = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "D1")))
+        d2 = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "D2")))
+    except TimeoutException:
+        pass
+
+    try:
+        if driver.find_elements(By.ID, "D1"):
+            _clear_and_type(driver.find_element(By.ID,"D1"), data1)
+        if driver.find_elements(By.ID, "D2"):
+            _clear_and_type(driver.find_element(By.ID,"D2"), data2)
+
+        _dismiss_overlays()
+        btn = WebDriverWait(driver, 12).until(EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR")))
+        try:
+            btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", btn)
+
+        time.sleep(3)
         log("[SGR] Execução disparada.")
+        return True
     except Exception as e:
         log(f"[ERRO] Datas/Executar: {e}")
+        raise
+
 
 def executar_relatorio_estoque(driver):
+    _dismiss_overlays()
+    if not _wait_filtro_page(timeout=25):
+        raise Exception("Tela de filtros do Estoque não carregou.")
+
     try:
-        executar_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR")))
-        executar_btn.click()
-        time.sleep(5)
+        btn = WebDriverWait(driver, 12).until(EC.element_to_be_clickable((By.ID, "BTN_EXECUTAR")))
+        try:
+            btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", btn)
+        time.sleep(3)
         log("[SGR] Botão 'Executar' clicado para Estoque Detalhado.")
         return True
     except Exception as e:
         log(f"[ERRO] Não foi possível clicar no botão 'Executar' para Estoque Detalhado: {e}")
-        return False
+        raise  
+
 
 def interacoes_sgr(driver):
     driver.fullscreen_window()
     actions = ActionChains(driver)
-    ok = abrir_menu_relatorio(driver, actions, "Rastreabilidade")
-    if not ok:
+
+    # Rastreabilidade
+    if not abrir_menu_relatorio(driver, actions, "Rastreabilidade"):
         raise Exception("Falha ao abrir Rastreabilidade")
-    selecionar_unidade_embarcadora(driver)
+    if not _wait_filtro_page(timeout=25):
+        raise Exception("Tela de filtros (Rastreabilidade) não carregou")
+    if not selecionar_unidade_embarcadora(driver):
+        raise Exception("Falha ao selecionar unidade (Rastreabilidade)")
     preencher_datas_e_executar(driver)
-    ok = abrir_menu_relatorio(driver, actions, "Histórico Transações")
-    if not ok:
+
+    # Histórico
+    if not abrir_menu_relatorio(driver, actions, "Histórico Transações"):
         raise Exception("Falha ao abrir Histórico Transações")
-    selecionar_unidade_embarcadora(driver)
+    if not _wait_filtro_page(timeout=25):
+        raise Exception("Tela de filtros (Histórico) não carregou")
+    if not selecionar_unidade_embarcadora(driver):
+        raise Exception("Falha ao selecionar unidade (Histórico)")
     preencher_datas_e_executar(driver, dias_passado=30)
-    ok = abrir_menu_relatorio(driver, actions, "Estoque Detalhado")
-    if not ok:
+
+    # Estoque
+    if not abrir_menu_relatorio(driver, actions, "Estoque Detalhado"):
         raise Exception("Falha ao abrir Estoque Detalhado")
-    selecionar_unidade_embarcadora(driver)
+    if not _wait_filtro_page(timeout=25):
+        raise Exception("Tela de filtros (Estoque) não carregou")
+    if not selecionar_unidade_embarcadora(driver):
+        raise Exception("Falha ao selecionar unidade (Estoque)")
     executar_relatorio_estoque(driver)
+
     return True
+
 
 def _default_download_dir():
     return os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
