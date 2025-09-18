@@ -6,6 +6,8 @@ from datetime import datetime
 import logging
 import time
 import csv
+import unicodedata, re
+
 
 def setup_logging():
     logging.basicConfig(
@@ -23,6 +25,60 @@ logger = setup_logging()
 def log(mensagem):
     logger.info(mensagem)
 
+DEBUG_DIR = os.path.join(os.getcwd(), f"_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+os.makedirs(DEBUG_DIR, exist_ok=True)
+log(f"[DEBUG] Salvando arquivos de diagnóstico em: {DEBUG_DIR}")
+
+def _dump(df, name, index=False):
+    path = os.path.join(DEBUG_DIR, name)
+    try:
+        df.to_csv(path, sep=";", index=index, encoding="utf-8-sig")
+        log(f"[DEBUG] Exportado: {path} ({len(df)} linhas)")
+    except Exception as e:
+        log(f"[WARN] Falha ao exportar {name}: {e}")
+
+def salvar_estoque_posicao_no_diretorio(base_dir: str, estoque_posicao: pd.DataFrame, salvar_xlsx: bool = False) -> str:
+
+    df = estoque_posicao.copy()
+
+    for col in ("DATA_VALIDADE", "DATA_PRIMEIRO_PALLET"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    col_prio = [
+        "BLOCO","COD_ENDERECO","COD_ITEM","DATA_VALIDADE",
+        "OCUPACAO","CAPACIDADE","LIVRE","FLAG_CHEIO",
+        "CHAVE_SKU_DATA","CHAVE_POS",
+        "ISFRONT_RUASKU","DATA_PRIMEIRO_PALLET","TOLERANCIA_5_DIAS",
+        "HABILITA_ORIGEM_FRONT","HABILITA_DESTINO_FRONT",
+        "TAXA_OCUPACAO_ORDENACAO","INDICE_GRUPO_NF_GLOBAL",
+        "OCP_REDISTRIBUIVEL_GLOBAL","OCP_CAP_ACUMULADA_NF_ANTES_GLOBAL",
+        "OCP_OCUPACAO_OTIMA_GLOBAL"
+    ]
+    cols_final = [c for c in col_prio if c in df.columns] + [c for c in df.columns if c not in col_prio]
+    df = df[cols_final]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(base_dir, f"estoque_posicao_{ts}.csv")
+
+    try:
+        df.to_csv(csv_path, sep=";", index=False, encoding="utf-8-sig")
+        log(f"[EXPORT] estoque_posicao salvo em CSV: {csv_path}  (linhas: {len(df)})")
+    except Exception as e:
+        log(f"[EXPORT][ERRO] Falha ao salvar CSV: {e}")
+        csv_path = ""
+
+    if salvar_xlsx:
+        try:
+            xlsx_path = os.path.join(base_dir, f"estoque_posicao_{ts}.xlsx")
+            df.to_excel(xlsx_path, index=False)
+            log(f"[EXPORT] estoque_posicao salvo em XLSX: {xlsx_path}")
+        except Exception as e:
+            log(f"[EXPORT][ERRO] Falha ao salvar XLSX: {e}")
+
+    return csv_path
+
+
 def encontrar_pasta_onedrive_empresa():
     log("Procurando pasta do OneDrive da empresa...")
     user_dir = os.environ["USERPROFILE"]
@@ -38,6 +94,56 @@ def encontrar_pasta_onedrive_empresa():
     
     log("Pasta do OneDrive não encontrada!")
     return None
+
+EXPECTED_COLS = [
+    "LOCAL_EXPEDICAO","COD_DEPOSITO","COD_ENDERECO","CHAVE_PALLET","VOLUME",
+    "COD_ITEM","DESC_ITEM","LOTE","UOM","DOCUMENTO",
+    "DATA_VALIDADE","DATA_ULTIMA_TRANSACAO","OCUPACAO",
+    "CAPACIDADE","DESCRICAO","QTDE_POR_PALLET","PALLET_COMPLETO","BLOCO","TIPO_ENDERECO",
+    "STATUS_PALLET","SHELF_ITEM","DATA_FABRICACAO","SHELF_ESTOQUE","DIAS_ESTOQUE","DIAS_VALIDADE","DATA_RELATORIO"
+]
+
+def _split_fix(parts, n):
+    if len(parts) > n:
+        head = parts[:n-1]
+        tail = ";".join(parts[n-1:])
+        return head + [tail]
+    elif len(parts) < n:
+        return parts + [""] * (n - len(parts))
+    return parts
+
+def _read_csv_strict_build_df(path, encodings=("utf-8-sig","utf-8","latin1","cp1252")) -> pd.DataFrame:
+    last_exc = None
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc, errors="replace") as f:
+                lines = [ln.rstrip("\r\n") for ln in f if ln.strip()]
+            header_idx = None
+            for i, ln in enumerate(lines):
+                parts = ln.split(";")
+                if ("LOCAL_EXPEDICAO" in parts) and ("COD_ENDERECO" in parts):
+                    header_idx = i
+                    break
+            if header_idx is None:
+                header_idx = 0 
+
+            header = _split_fix(lines[header_idx].split(";"), len(EXPECTED_COLS))
+            use_cols = EXPECTED_COLS
+
+            rows = []
+            for ln in lines[header_idx+1:]:
+                parts = _split_fix(ln.split(";"), len(EXPECTED_COLS))
+                rows.append(parts)
+
+            df_out = pd.DataFrame(rows, columns=use_cols, dtype=str)
+            df_out.columns = [c.strip() for c in df_out.columns]
+            for c in df_out.columns:
+                df_out[c] = df_out[c].astype(str).str.strip().str.replace('"','').str.replace("'","")
+            return df_out
+        except Exception as e:
+            last_exc = e
+            continue
+    raise last_exc if last_exc else RuntimeError("Falha ao ler CSV com encodings testados.")
 
 def _pick_col(df, candidatos):
     log(f"Procurando coluna entre candidatos: {candidatos}")
@@ -58,59 +164,31 @@ def _pick_col(df, candidatos):
     raise ValueError(f"Coluna não encontrada. Candidatos: {candidatos}")
 
 def ler_csv_corretamente(csv_path):
-    log(f"Processando arquivo: {os.path.basename(csv_path)}")
-    
-    try:
-        log("Tentando leitura com pandas...")
-        df = pd.read_csv(csv_path, sep=';', encoding='latin1', low_memory=False, on_bad_lines='warn')
-        log(f"CSV lido com pandas - Linhas: {len(df)}, Colunas: {list(df.columns)}")
-        return df
-    except Exception as e:
-        log(f"Falha ao ler com pandas: {e}. Usando método manual...")
-    
-    with open(csv_path, 'r', encoding='latin1') as f:
-        lines = [line.strip().split(';') for line in f.readlines() if line.strip()]
-    
-    if not lines:
-        raise ValueError("Arquivo CSV vazio ou inválido")
-    
-    header = lines[0]
-    data = []
-    problemas = 0
-    
-    for i, line in enumerate(lines[1:]):
-        if len(line) == len(header):
-            data.append(line)
-        else:
-            problemas += 1
-            corrected = line[:len(header)]
-            if len(corrected) == len(header):
-                data.append(corrected)
-            else:
-                corrected = line + [''] * (len(header) - len(line))
-                if len(corrected) == len(header):
-                    data.append(corrected)
-                else:
-                    log(f"[AVISO] Linha {i+2} ignorada - colunas: {len(line)} (esperado: {len(header)})")
-    
-    if problemas > 0:
-        log(f"[AVISO] Foram corrigidas {problemas} linhas com problemas de formatação")
-    
-    df = pd.DataFrame(data, columns=header)
-    
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace('"', '').str.replace("'", "").str.strip()
-    
-    log("[DEBUG] Estrutura do DataFrame carregado:")
-    log(f"Total de linhas: {len(df)}")
-    log(f"Colunas: {list(df.columns)}")
-    
-    log("[DEBUG] Primeiras 3 linhas dos dados:")
-    for i, (_, row) in enumerate(df.head(3).iterrows()):
-        log(f"Linha {i}: {row.to_dict()}")
-    
+    log(f"Processando arquivo (estrito): {os.path.basename(csv_path)}")
+    df = _read_csv_strict_build_df(csv_path)
+
+    df.columns = [c.upper() for c in df.columns]
+
+    for col in ("DATA_VALIDADE","DATA_ULTIMA_TRANSACAO","DATA_FABRICACAO","DATA_RELATORIO"):
+        if col in df.columns:
+            try:
+                df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+            except Exception:
+                pass
+
+    for col in ("OCUPACAO","CAPACIDADE","QTDE_POR_PALLET","VOLUME","DIAS_ESTOQUE","DIAS_VALIDADE"):
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(",", ".", regex=False)
+                .str.replace(r"[^0-9\.\-]", "", regex=True)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    log(f"CSV lido (estrito) — Linhas: {len(df)}, Colunas: {list(df.columns)}")
     return df
+
 def verificar_qualidade_dados(df, nome_arquivo):
     log(f"Verificando qualidade dos dados de {nome_arquivo}...")
     
@@ -248,16 +326,20 @@ def calcular_data_primeiro_palete(estoque_df):
     )
     log("Data_Primeiro_Palete calculada com sucesso")
     return estoque_df
-
+def _canon(s: str) -> str:
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
+    s = s.replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip().upper()
+    return s
 def ler_estoque(estoque_path):
     log(f"Lendo arquivo de estoque: {estoque_path}")
-    
+
     if estoque_path.lower().endswith('.csv'):
-        df = ler_csv_corretamente(estoque_path)
+        df = ler_csv_corretamente(estoque_path)  
     else:
         log("Lendo arquivo Excel de estoque...")
         df = pd.read_excel(estoque_path)
-    
+
     df.columns = [col.strip().upper() for col in df.columns]
     log(f"Colunas do estoque: {list(df.columns)}")
     
@@ -269,7 +351,22 @@ def ler_estoque(estoque_path):
         'CHAVE_PALLET': ['CHAVE_PALLET', 'PALLET', 'LOTE'],
         'DATA_ULTIMA_TRANSACAO': ['DATA_ULTIMA_TRANSACAO', 'DT_ULTIMA_TRANSACAO', 'ULTIMA_TRANSACAO']
     }
-    
+    try:
+        col_tipo = _pick_col(df, ['TIPO_ENDERECO','TIPO ENDERECO','TIPO','TIPO_POSICAO'])
+        if col_tipo != 'TIPO_ENDERECO':
+            df.rename(columns={col_tipo: 'TIPO_ENDERECO'}, inplace=True)
+    except ValueError:
+        log("AVISO: coluna TIPO_ENDERECO não encontrada no estoque; não será aplicado filtro de tipo.")
+        col_tipo = None
+
+    if col_tipo:
+        ALVOS = {"DINAMICO", "PUSH BACK", "PUSHBACK"}  
+        df['TIPO_ENDERECO_CANON'] = df['TIPO_ENDERECO'].map(_canon)
+        antes = len(df)
+        df = df[df['TIPO_ENDERECO_CANON'].isin(ALVOS)].copy()
+        df.drop(columns=['TIPO_ENDERECO_CANON'], inplace=True)
+        log(f"Filtro de TIPO_ENDERECO aplicado (DINAMICO/PUSH BACK): {antes} -> {len(df)} linhas")
+
     for new_col, old_cols in col_map.items():
         try:
             old_col = _pick_col(df, old_cols)
@@ -407,42 +504,178 @@ def calcular_taxa_ocupacao(estoque_posicao):
     log("Taxa de ocupação calculada")
     return estoque_posicao
 
-def calcular_ocupacao_otima_global(estoque_posicao):
-    log("Calculando ocupação ótima global...")
-    
-    def calcular_para_grupo(grupo):
-        grupo = grupo.copy()
-        grupo['INDICE_GRUPO_NF_GLOBAL'] = grupo['TAXA_OCUPACAO_ORDENACAO'].rank(method='dense', ascending=False)
-        grupo['OCP_REDISTRIBUIVEL_GLOBAL'] = grupo[grupo['FLAG_CHEIO'] == 0]['OCUPACAO'].sum()
-        return grupo
-    
-    log("Aplicando cálculo por grupo SKU_DATA...")
-    estoque_posicao = estoque_posicao.groupby('CHAVE_SKU_DATA').apply(calcular_para_grupo).reset_index(drop=True)
-    
-    log("Cálculo de ocupação ótima global concluído")
+def habilitar_flags(estoque_posicao: pd.DataFrame) -> pd.DataFrame:
+
+    req = ["BLOCO", "DATA_VALIDADE", "DATA_PRIMEIRO_PALLET", "ISFRONT_RUASKU"]
+    faltam = [c for c in req if c not in estoque_posicao.columns]
+    if faltam:
+        raise KeyError(f"[FLAGS] Faltam colunas em estoque_posicao: {faltam}")
+
+    estoque_posicao["DATA_VALIDADE"] = pd.to_datetime(estoque_posicao["DATA_VALIDADE"], errors="coerce")
+    estoque_posicao["DATA_PRIMEIRO_PALLET"] = pd.to_datetime(estoque_posicao["DATA_PRIMEIRO_PALLET"], errors="coerce")
+
+    delta = (estoque_posicao["DATA_VALIDADE"] - estoque_posicao["DATA_PRIMEIRO_PALLET"]).abs()
+    estoque_posicao["TOLERANCIA_5_DIAS"] = delta.dt.days.le(5) & delta.notna()
+    estoque_posicao["TOLERANCIA_5_DIAS"] = estoque_posicao["TOLERANCIA_5_DIAS"].astype(int)
+
+    estoque_posicao["HABILITA_ORIGEM_FRONT"] = (estoque_posicao["ISFRONT_RUASKU"] == 1).astype(int)
+
+    blocos_fg = estoque_posicao["BLOCO"].astype(str).str.upper().isin({"F", "G"})
+    cond_fg   = blocos_fg & (estoque_posicao["ISFRONT_RUASKU"] == 1) & (estoque_posicao["TOLERANCIA_5_DIAS"] == 1)
+    cond_out  = (~blocos_fg) & (estoque_posicao["ISFRONT_RUASKU"] == 1)
+    estoque_posicao["HABILITA_DESTINO_FRONT"] = (cond_fg | cond_out).astype(int)
+    try:
+        total = len(estoque_posicao)
+        h_orig = int(estoque_posicao["HABILITA_ORIGEM_FRONT"].sum())
+        h_dest = int(estoque_posicao["HABILITA_DESTINO_FRONT"].sum())
+        log(f"[FLAGS] Linhas: {total} | Origem=1: {h_orig} | Destino=1: {h_dest}")
+
+        fg = int(estoque_posicao["BLOCO"].astype(str).str.upper().isin({"F","G"}).sum())
+
+        cnt_tol_fg = int((
+            (estoque_posicao["TOLERANCIA_5_DIAS"] == 1)
+            & (estoque_posicao["BLOCO"].astype(str).str.upper().isin({"F","G"}))
+        ).sum())
+
+        log(f"[FLAGS] Linhas em blocos F/G: {fg} | Tolerância=1 nesses blocos: {cnt_tol_fg}")
+    except Exception:
+        pass
+
     return estoque_posicao
 
+
+def calcular_ocupacao_otima_global(estoque_posicao):
+    log("Calculando ocupação ótima global (com logs)…")
+
+    req_cols = ["CHAVE_SKU_DATA","OCUPACAO","CAPACIDADE","FLAG_CHEIO",
+                "HABILITA_ORIGEM_FRONT","HABILITA_DESTINO_FRONT","TAXA_OCUPACAO_ORDENACAO"]
+    faltam = [c for c in req_cols if c not in estoque_posicao.columns]
+    if faltam:
+        raise KeyError(f"Colunas necessárias ausentes em estoque_posicao: {faltam}")
+
+    def _rank(g):
+        base = g[(g["FLAG_CHEIO"]==0) & (g["HABILITA_DESTINO_FRONT"]==1)].copy()
+        base = base.sort_values("TAXA_OCUPACAO_ORDENACAO", ascending=False)
+        ranks = pd.Series(index=g.index, dtype="float")
+        ranks.loc[base.index] = base["TAXA_OCUPACAO_ORDENACAO"].rank(method="dense", ascending=False)
+        return ranks
+
+    estoque_posicao["INDICE_GRUPO_NF_GLOBAL"] = (
+        estoque_posicao.groupby("CHAVE_SKU_DATA", group_keys=False).apply(_rank)
+    )
+    log(f"[RANK] linhas ranqueadas: {estoque_posicao['INDICE_GRUPO_NF_GLOBAL'].notna().sum()}")
+
+    def _red(g):
+        return pd.Series(
+            g[(g["FLAG_CHEIO"]==0) & (g["HABILITA_ORIGEM_FRONT"]==1)]["OCUPACAO"].sum(),
+            index=g.index
+        )
+    estoque_posicao["OCP_REDISTRIBUIVEL_GLOBAL"] = (
+        estoque_posicao.groupby("CHAVE_SKU_DATA", group_keys=False).apply(_red)
+    )
+    log(f"[REDIST] soma total redistribuível: {estoque_posicao['OCP_REDISTRIBUIVEL_GLOBAL'].sum():.0f}")
+
+    def _cap_acum(g):
+        sub = g[(g["FLAG_CHEIO"]==0) & (g["HABILITA_DESTINO_FRONT"]==1)].copy()
+        sub = sub.sort_values("INDICE_GRUPO_NF_GLOBAL", ascending=True)
+        sub["CAP_ACUM_ANTES"] = sub["CAPACIDADE"].cumsum().shift(1).fillna(0)
+        out = pd.Series(0.0, index=g.index)
+        out.loc[sub.index] = sub["CAP_ACUM_ANTES"].values
+        return out
+    estoque_posicao["OCP_CAP_ACUMULADA_NF_ANTES_GLOBAL"] = (
+        estoque_posicao.groupby("CHAVE_SKU_DATA", group_keys=False).apply(_cap_acum)
+    )
+
+    def _ocp(row):
+        if row["FLAG_CHEIO"] == 1:
+            return float(row["OCUPACAO"])
+        cap = float(row["CAPACIDADE"] or 0)
+        red = float(row["OCP_REDISTRIBUIVEL_GLOBAL"] or 0)
+        cap_ac = float(row["OCP_CAP_ACUMULADA_NF_ANTES_GLOBAL"] or 0)
+        return max(0.0, min(cap, red - cap_ac))
+
+    estoque_posicao["OCP_OCUPACAO_OTIMA_GLOBAL"] = estoque_posicao.apply(_ocp, axis=1)
+
+    neg = (estoque_posicao["OCP_OCUPACAO_OTIMA_GLOBAL"] < 0).sum()
+    if neg:
+        log(f"[CHECK] {neg} linhas com OCP_OTIMA negativa (depois do max(0,…)).")
+    acima = (estoque_posicao["OCP_OCUPACAO_OTIMA_GLOBAL"] > estoque_posicao["CAPACIDADE"]).sum()
+    if acima:
+        log(f"[CHECK] {acima} linhas com OCP_OTIMA > CAPACIDADE (antes de min(cap,…)).")
+
+    impacto = (estoque_posicao
+               .assign(DIFF=lambda d: (d["OCP_OCUPACAO_OTIMA_GLOBAL"] - d["OCUPACAO"]).abs())
+               .groupby("CHAVE_SKU_DATA")["DIFF"].sum()
+               .sort_values(ascending=False)
+               .head(20)
+               .reset_index())
+    _dump(impacto, "top20_grupos_impacto.csv")
+
+    top5 = set(impacto["CHAVE_SKU_DATA"].head(5).tolist())
+    det = estoque_posicao[estoque_posicao["CHAVE_SKU_DATA"].isin(top5)].copy()
+    _dump(det, "detalhe_top5_grupos_otimizacao.csv")
+
+    log("Ocupação ótima global calculada.")
+    return estoque_posicao
+
+
 def calcular_indicadores(estoque_posicao, enderecos_df):
-    log("Calculando Colmeia...")
-    porColmeia = (estoque_posicao['LIVRE'].sum() / enderecos_df['CAPACIDADE'].sum())
-    log("Calculando Ruas Vazias Real...")
-    enderecos_com_itens = estoque_posicao[estoque_posicao['OCUPACAO'] > 0]['COD_ENDERECO'].unique()
-    todos_enderecos = enderecos_df['COD_ENDERECO'].unique()
-    end_vazios_real = len(np.setdiff1d(todos_enderecos, enderecos_com_itens))
-    log("Calculando Ruas Vazias Otimizado...")
-    end_vazios_otimo = end_vazios_real  
-    log("Calculando Paletes Movimentados...")
-    pallets_movimentados = 0  
-    log("Calculando Ruas Liberadas...")
+    log("Calculando indicadores (com logs)…")
+
+    total_cap = float(enderecos_df["CAPACIDADE"].sum())
+    livre = float(estoque_posicao["CAPACIDADE"].sum() - estoque_posicao["OCUPACAO"].sum())
+    porColmeia = (livre / total_cap) if total_cap else 0.0
+    log(f"[COLMEIA] livre={livre:.0f}  cap_total={total_cap:.0f}  colmeia={porColmeia:.4f}")
+
+    end_com_itens = set(estoque_posicao.loc[estoque_posicao["OCUPACAO"]>0,"COD_ENDERECO"].astype(str))
+    todos_end = set(enderecos_df["COD_ENDERECO"].astype(str))
+    end_vazios_real = len(todos_end - end_com_itens)
+    log(f"[RUAS REAL] total_end={len(todos_end)}  com_itens={len(end_com_itens)}  vazias_real={end_vazios_real}")
+
+    if "OCP_OCUPACAO_OTIMA_GLOBAL" not in estoque_posicao.columns:
+        log("[ERRO] OCP_OCUPACAO_OTIMA_GLOBAL ausente. Verifique a ordem das chamadas.")
+        end_vazios_otimo = end_vazios_real
+    else:
+        end_otim = set(estoque_posicao.loc[estoque_posicao["OCP_OCUPACAO_OTIMA_GLOBAL"]>0,"COD_ENDERECO"].astype(str))
+        end_vazios_otimo = len(todos_end - end_otim)
+        log(f"[RUAS OTIM] com_itens_otim={len(end_otim)}  vazias_otimo={end_vazios_otimo}")
+
+        liberadas_por_endereco = sorted(list((todos_end - end_com_itens) ^ (todos_end - end_otim)))[:50]
+        if liberadas_por_endereco:
+            log(f"[DETALHE] primeiros endereços que mudaram de status (max 50): {liberadas_por_endereco}")
+
+    if "CHAVE_POS" not in estoque_posicao.columns:
+        log("[ERRO] CHAVE_POS ausente em estoque_posicao.")
+        pallets_movimentados = 0
+    else:
+        grp = (estoque_posicao
+               .groupby("CHAVE_POS")
+               .agg(Ocupacao_Real=("OCUPACAO","sum"),
+                    Ocupacao_Otima=("OCP_OCUPACAO_OTIMA_GLOBAL","sum"))
+               .reset_index())
+        grp["DIFF_ABS"] = (grp["Ocupacao_Otima"] - grp["Ocupacao_Real"]).abs()
+        pallets_movimentados = grp["DIFF_ABS"].sum() / 2.0
+        log(f"[MOVE] soma |Δ| = {grp['DIFF_ABS'].sum():.0f}  paletes_mov = {pallets_movimentados:.0f}")
+        _dump(grp.sort_values("DIFF_ABS", ascending=False).head(50), "pallets_mov_top50_chavepos.csv")
+
     end_vazios_total = end_vazios_otimo - end_vazios_real
-    log("Todos os indicadores calculados")
+    log(f"[LIBERADAS] {end_vazios_total} ruas")
+
+    miss_cap = estoque_posicao["CAPACIDADE"].isnull().sum()
+    if miss_cap:
+        top = (estoque_posicao[estoque_posicao["CAPACIDADE"].isnull()][["BLOCO","COD_ENDERECO"]]
+               .drop_duplicates())
+        _dump(top, "enderecos_sem_capacidade.csv")
+        log(f"[CHECK] {miss_cap} linhas sem CAPACIDADE — veja enderecos_sem_capacidade.csv")
+
     return {
         'porColmeia': porColmeia,
-        'end_vazios_real': end_vazios_real,
-        'end_vazios_otimo': end_vazios_otimo,
-        'pallets_movimentados': pallets_movimentados,
-        'end_vazios_total': end_vazios_total
+        'end_vazios_real': int(end_vazios_real),
+        'end_vazios_otimo': int(end_vazios_otimo),
+        'pallets_movimentados': float(pallets_movimentados),
+        'end_vazios_total': int(end_vazios_total)
     }
+
 
 def enviar_relatorio_email(assunto, corpo):
     log("Preparando para enviar e-mail...")
@@ -456,6 +689,23 @@ def enviar_relatorio_email(assunto, corpo):
         log("E-mail de resultado enviado.")
     except Exception as e:
         log(f"Falha ao enviar e-mail de resultado: {e}")
+
+def filtrar_enderecos_por_tipo(enderecos_df: pd.DataFrame) -> pd.DataFrame:
+    alvo = {"DINAMICO", "MEZANINO", "PORTA PALETE", "PORTA PALETES", "PORTA-PALETE", "PORTA-PALETES"}
+    try:
+        col_tipo = _pick_col(enderecos_df, ['TIPO_ENDERECO','TIPO ENDERECO','TIPO','TIPO_POSICAO'])
+        if col_tipo != 'TIPO_ENDERECO':
+            enderecos_df = enderecos_df.rename(columns={col_tipo: 'TIPO_ENDERECO'})
+        enderecos_df['_TIPO_CANON'] = enderecos_df['TIPO_ENDERECO'].map(_canon)
+        antes = len(enderecos_df)
+        enderecos_df = enderecos_df[enderecos_df['_TIPO_CANON'].isin(alvo)].copy()
+        enderecos_df.drop(columns=['_TIPO_CANON'], inplace=True)
+        log(f"[ENDERECOS] Filtro TIPO_ENDERECO (DINAMICO/MEZANINO/PORTA PALETE): {antes} -> {len(enderecos_df)} linhas")
+        vc = enderecos_df['TIPO_ENDERECO'].astype(str).str.upper().value_counts().head(10)
+        log(f"[ENDERECOS] Top tipos após filtro:\n{vc.to_string()}")
+    except ValueError:
+        log("[ENDERECOS] Coluna TIPO_ENDERECO não encontrada — filtro não aplicado.")
+    return enderecos_df
 
 def main():
     inicio = time.time()
@@ -491,10 +741,10 @@ def main():
         
         estoque_df = ler_estoque(estoque_path)
         enderecos_df = ler_enderecos(enderecos_path)
+        enderecos_df = filtrar_enderecos_por_tipo(enderecos_df)
         estoque_df = verificar_qualidade_dados(estoque_df, "estoque")
         enderecos_df = verificar_qualidade_dados(enderecos_df, "endereços")
 
-        
         if estoque_df is None or enderecos_df is None:
             log("Falha ao processar arquivos! Encerrando processo.")
             return
@@ -502,10 +752,12 @@ def main():
         estoque_posicao = criar_estoque_posicao(estoque_df, enderecos_df)
         estoque_posicao = calcular_is_front(estoque_posicao, estoque_df)
         estoque_posicao = calcular_taxa_ocupacao(estoque_posicao)
+        estoque_posicao = habilitar_flags(estoque_posicao) 
         estoque_posicao = calcular_ocupacao_otima_global(estoque_posicao)
-        estoque_posicao = criar_estoque_posicao(estoque_df, enderecos_df)
 
         indicadores = calcular_indicadores(estoque_posicao, enderecos_df)
+        salvar_estoque_posicao_no_diretorio(fonte_dir, estoque_posicao, salvar_xlsx=True)  
+
         
         hora_atual = datetime.now().hour
         if hora_atual < 6:

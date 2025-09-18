@@ -18,14 +18,14 @@ BASE_DIR_AUD = _find_onedrive_subfolder("Gestão de Estoque - Gestão_Auditoria"
 if not BASE_DIR_AUD:
     raise FileNotFoundError("Pasta 'Gestão de Estoque - Gestão_Auditoria' não encontrada no OneDrive.")
 
-caminho = os.path.join(BASE_DIR_AUD, "rastreabilidade.csv")
+caminho = os.path.join(BASE_DIR_AUD, "estoque_detalhado.csv")
 
 EXPECTED_COLS = [
-    "ID","LOCAL_EXPEDICAO","REMESSA","COD_ITEM","DESC_ITEM","LOTE",
-    "CASEWHENA.EXCLUIDO_POR_LOGINISNULLTHENA.VOLUMEELSE-1*A.VOLUMEEND",
-    "UOM","DATA_VALIDADE","COD_RASTREABILIDADE","TIPO_RASTREABILIDADE",
-    "CREATED_AT","CRIADO_POR_LOGIN","ATUALIZADO_POR_LOGIN",
-    "UPDATED_AT","DELETED_AT","EXCLUIDO_POR_LOGIN"
+    "LOCAL_EXPEDICAO","COD_DEPOSITO","COD_ENDERECO","CHAVE_PALLET","VOLUME",
+    "COD_ITEM","DESC_ITEM","LOTE","UOM","DOCUMENTO",
+    "DATA_VALIDADE","DATA_ULTIMA_TRANSACAO","OCUPACAO",
+    "CAPACIDADE","DESCRICAO","QTDE_POR_PALLET","PALLET_COMPLETO","BLOCO","TIPO_ENDERECO",
+    "STATUS_PALLET","SHELF_ITEM","DATA_FABRICACAO","SHELF_ESTOQUE","DIAS_ESTOQUE","DIAS_VALIDADE","DATA_RELATORIO"
 ]
 
 def _split_fix(parts, n):
@@ -49,7 +49,7 @@ def _read_csv_strict_build_df(path, encodings=("utf-8-sig","utf-8","latin1","cp1
             header_idx = None
             for i, ln in enumerate(lines):
                 parts = ln.split(";")
-                if ("ID" in parts) and ("REMESSA" in parts):
+                if ("LOCAL_EXPEDICAO" in parts) and ("COD_ENDERECO" in parts):
                     header_idx = i
                     break
 
@@ -85,9 +85,9 @@ print(df.columns.tolist())
 print("\nPrimeiros itens:")
 print(df.head())
 
-if "ID" in df.columns:
-    print("\nValores da coluna ID (top 10):")
-    print(df["COD_RASTREABILIDADE"].head(10).tolist())
-    print("dtype de ID:", df["COD_RASTREABILIDADE"].dtype)
+if "BLOCO" in df.columns:
+    print("\nValores da coluna BLOCO (top 10):")
+    print(df["BLOCO"].head(10).tolist())
+    print("dtype de ID:", df["BLOCO"].dtype)
 else:
-    print("\n[ALERTA] Coluna 'ID' não encontrada; verifique o cabeçalho.")
+    print("\n[ALERTA] Coluna 'BLOCO' não encontrada; verifique o cabeçalho.")
