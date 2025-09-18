@@ -7,7 +7,7 @@ import logging
 import time
 import csv
 import unicodedata, re
-
+import glob
 
 def setup_logging():
     logging.basicConfig(
@@ -36,9 +36,29 @@ def _dump(df, name, index=False):
         log(f"[DEBUG] Exportado: {path} ({len(df)} linhas)")
     except Exception as e:
         log(f"[WARN] Falha ao exportar {name}: {e}")
-
-def salvar_estoque_posicao_no_diretorio(base_dir: str, estoque_posicao: pd.DataFrame, salvar_xlsx: bool = False) -> str:
-
+def limpar_relatorios_antigos(base_dir: str, padrao: str = "estoque_posicao_*.csv"):
+    try:
+        arquivos_antigos = glob.glob(os.path.join(base_dir, padrao))
+        
+        for arquivo in arquivos_antigos:
+            try:
+                os.remove(arquivo)
+                log(f"[LIMPEZA] Arquivo antigo removido: {os.path.basename(arquivo)}")
+            except Exception as e:
+                log(f"[LIMPEZA][ERRO] Falha ao remover {arquivo}: {e}")
+        
+        return len(arquivos_antigos)
+    except Exception as e:
+        log(f"[LIMPEZA][ERRO] Falha na limpeza de arquivos antigos: {e}")
+        return 0
+def salvar_estoque_posicao_no_diretorio(base_dir: str, estoque_posicao: pd.DataFrame,
+                                         salvar_xlsx: bool = False) -> str:
+    """Salva o estoque_posicao e retorna o caminho do arquivo"""
+    
+    limpar_relatorios_antigos(base_dir, "estoque_posicao_*.csv")
+    if salvar_xlsx:
+        limpar_relatorios_antigos(base_dir, "estoque_posicao_*.xlsx")
+    
     df = estoque_posicao.copy()
 
     for col in ("DATA_VALIDADE", "DATA_PRIMEIRO_PALLET"):
@@ -622,10 +642,16 @@ def calcular_ocupacao_otima_global(estoque_posicao):
 def calcular_indicadores(estoque_posicao, enderecos_df):
     log("Calculando indicadores (com logs)…")
 
-    total_cap = float(enderecos_df["CAPACIDADE"].sum())
-    livre = float(estoque_posicao["CAPACIDADE"].sum() - estoque_posicao["OCUPACAO"].sum())
-    porColmeia = (livre / total_cap) if total_cap else 0.0
-    log(f"[COLMEIA] livre={livre:.0f}  cap_total={total_cap:.0f}  colmeia={porColmeia:.4f}")
+    capacidade_por_endereco = estoque_posicao.groupby('COD_ENDERECO')['CAPACIDADE'].first()
+    ocupacao_por_endereco = estoque_posicao.groupby('COD_ENDERECO')['OCUPACAO'].sum()
+    
+    total_cap = float(capacidade_por_endereco.sum())
+    total_ocup = float(ocupacao_por_endereco.sum())
+    cap_real=float(enderecos_df["CAPACIDADE"].sum())
+    livre = total_cap - total_ocup
+        
+    porColmeia = (livre / cap_real) if cap_real else 0.0
+    log(f"[COLMEIA] livre={livre:.0f}  cap_total={cap_real:.0f}  colmeia={porColmeia:.4f}")
 
     end_com_itens = set(estoque_posicao.loc[estoque_posicao["OCUPACAO"]>0,"COD_ENDERECO"].astype(str))
     todos_end = set(enderecos_df["COD_ENDERECO"].astype(str))
@@ -691,7 +717,7 @@ def enviar_relatorio_email(assunto, corpo):
         log(f"Falha ao enviar e-mail de resultado: {e}")
 
 def filtrar_enderecos_por_tipo(enderecos_df: pd.DataFrame) -> pd.DataFrame:
-    alvo = {"DINAMICO", "MEZANINO", "PORTA PALETE", "PORTA PALETES", "PORTA-PALETE", "PORTA-PALETES"}
+    alvo = {"DINAMICO", "MEZANINO", "PUSH BACK", "PUSHBACK"}
     try:
         col_tipo = _pick_col(enderecos_df, ['TIPO_ENDERECO','TIPO ENDERECO','TIPO','TIPO_POSICAO'])
         if col_tipo != 'TIPO_ENDERECO':
@@ -700,7 +726,7 @@ def filtrar_enderecos_por_tipo(enderecos_df: pd.DataFrame) -> pd.DataFrame:
         antes = len(enderecos_df)
         enderecos_df = enderecos_df[enderecos_df['_TIPO_CANON'].isin(alvo)].copy()
         enderecos_df.drop(columns=['_TIPO_CANON'], inplace=True)
-        log(f"[ENDERECOS] Filtro TIPO_ENDERECO (DINAMICO/MEZANINO/PORTA PALETE): {antes} -> {len(enderecos_df)} linhas")
+        log(f"[ENDERECOS] Filtro TIPO_ENDERECO (DINAMICO/MEZANINO/PUSH BACK): {antes} -> {len(enderecos_df)} linhas")
         vc = enderecos_df['TIPO_ENDERECO'].astype(str).str.upper().value_counts().head(10)
         log(f"[ENDERECOS] Top tipos após filtro:\n{vc.to_string()}")
     except ValueError:

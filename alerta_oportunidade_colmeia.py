@@ -1,10 +1,12 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
+import glob
 
 def setup_auditoria_logging():
+    """Configura logging específico para a auditoria"""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,12 +22,32 @@ logger_auditoria = setup_auditoria_logging()
 def log_auditoria(mensagem):
     logger_auditoria.info(mensagem)
 
+def encontrar_arquivo_transacoes(base_dir):
+    """Encontra o arquivo de transações mais recente"""
+    log_auditoria(f"Procurando arquivos de transações em: {base_dir}")
+    
+    padroes = ['*historico_transacoes*', '*transacoes*', '*movimentacoes*']
+    extensoes = ['.csv', '.xlsx', '.xls']
+    
+    for padrao in padroes:
+        for extensao in extensoes:
+            arquivos = glob.glob(os.path.join(base_dir, f"{padrao}{extensao}"))
+            if arquivos:
+                # Retorna o arquivo mais recente (por modificação)
+                arquivo_mais_recente = max(arquivos, key=os.path.getmtime)
+                log_auditoria(f"Arquivo de transações encontrado: {arquivo_mais_recente}")
+                return arquivo_mais_recente
+    
+    log_auditoria("Nenhum arquivo de transações encontrado")
+    return None
+
 def ler_transacoes(caminho_transacoes):
+    """Lê o arquivo de transações históricas"""
     log_auditoria(f"Lendo transações de: {caminho_transacoes}")
     
     try:
         if caminho_transacoes.lower().endswith('.csv'):
-            transacoes_df = pd.read_csv(caminho_transacoes, sep=';', encoding='latin1')
+            transacoes_df = pd.read_csv(caminho_transacoes, sep=';', encoding='latin1', low_memory=False)
         else:
             transacoes_df = pd.read_excel(caminho_transacoes)
         
@@ -38,21 +60,28 @@ def ler_transacoes(caminho_transacoes):
         log_auditoria(f"Erro ao ler transações: {e}")
         return None
 
-def filtrar_transacoes_recentes(transacoes_df, dias_retroativos=7):
+def filtrar_transacoes_recentes(transacoes_df, dias_retroativos=3):
+    """Filtra transações dos últimos dias"""
     log_auditoria(f"Filtrando transações dos últimos {dias_retroativos} dias")
     
     try:
-        transacoes_df['CREATED_AT'] = pd.to_datetime(
-            transacoes_df['CREATED_AT'], 
-            dayfirst=True, 
-            errors='coerce'
-        )
-        
-        data_limite = datetime.now() - pd.Timedelta(days=dias_retroativos)
-        transacoes_recentes = transacoes_df[transacoes_df['CREATED_AT'] >= data_limite]
-        
-        log_auditoria(f"Transações recentes: {len(transacoes_recentes)}")
-        return transacoes_recentes
+        # Converter coluna de data
+        if 'CREATED_AT' in transacoes_df.columns:
+            transacoes_df['CREATED_AT'] = pd.to_datetime(
+                transacoes_df['CREATED_AT'], 
+                dayfirst=True, 
+                errors='coerce'
+            )
+            
+            data_limite = datetime.now() - timedelta(days=dias_retroativos)
+            transacoes_recentes = transacoes_df[transacoes_df['CREATED_AT'] >= data_limite]
+            
+            log_auditoria(f"Transações recentes: {len(transacoes_recentes)}")
+            return transacoes_recentes
+        else:
+            log_auditoria("Coluna CREATED_AT não encontrada - usando todas as transações")
+            return transacoes_df
+            
     except Exception as e:
         log_auditoria(f"Erro ao filtrar transações: {e}")
         return transacoes_df
@@ -63,8 +92,13 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
     
     alertas = []
     
+    # Filtrar apenas saídas (movimentações que retiraram estoque)
     saidas = transacoes_df[transacoes_df['TIPO_MOVIMENTO'].str.upper() == 'SAIDA']
     log_auditoria(f"Total de saídas encontradas: {len(saidas)}")
+    
+    if len(saidas) == 0:
+        log_auditoria("Nenhuma saída encontrada para análise")
+        return alertas
     
     for idx, transacao in saidas.iterrows():
         try:
@@ -74,26 +108,32 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
             endereco_origem = transacao['COD_ENDERECO']
             
             if pd.isna(data_validade):
+                log_auditoria(f"Data de validade inválida para transação {transacao.get('ID', 'N/A')}")
                 continue
             
+            # Formatar chave SKU_DATA para buscar no estoque
             chave_sku_data = f"{sku}|{data_validade.strftime('%Y%m%d')}"
             
+            # Buscar esse SKU+Data em outros endereços
             outros_enderecos = estoque_posicao[
                 (estoque_posicao['CHAVE_SKU_DATA'] == chave_sku_data) &
                 (estoque_posicao['COD_ENDERECO'] != endereco_origem)
             ]
             
             if len(outros_enderecos) == 0:
+                # Não há outros endereços com o mesmo item
                 continue
             
+            # Verificar se algum endereço alternativo tinha capacidade disponível
             enderecos_com_capacidade = outros_enderecos[
                 outros_enderecos['LIVRE'] > 0
             ]
             
             if len(enderecos_com_capacidade) > 0:
+                # RISCO DE COLMEIA: Havia endereços alternativos com capacidade
                 alerta = {
-                    'ID_TRANSACAO': transacao['ID'],
-                    'DATA_TRANSACAO': transacao['CREATED_AT'],
+                    'ID_TRANSACAO': transacao.get('ID', 'N/A'),
+                    'DATA_TRANSACAO': transacao.get('CREATED_AT', 'N/A'),
                     'SKU': sku,
                     'DESC_ITEM': transacao.get('DESC_ITEM', 'N/A'),
                     'LOTE': transacao.get('LOTE', 'N/A'),
@@ -106,6 +146,7 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
                     'DETALHES_OPORTUNIDADES': []
                 }
                 
+                # Adicionar detalhes das oportunidades
                 for _, oportunidade in enderecos_com_capacidade.head(3).iterrows():
                     alerta['DETALHES_OPORTUNIDADES'].append({
                         'ENDERECO_ALTERNATIVO': oportunidade['COD_ENDERECO'],
@@ -117,7 +158,7 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
                     })
                 
                 alertas.append(alerta)
-                log_auditoria(f"Alerta encontrado para transação {transacao['ID']} - SKU: {sku}")
+                log_auditoria(f"Alerta encontrado para transação {transacao.get('ID', 'N/A')} - SKU: {sku}")
                 
         except Exception as e:
             log_auditoria(f"Erro ao processar transação {transacao.get('ID', 'N/A')}: {e}")
@@ -127,6 +168,7 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
     return alertas
 
 def gerar_relatorio_alertas(alertas):
+    """Gera relatório detalhado dos alertas"""
     if not alertas:
         log_auditoria("Nenhum alerta de colmeia encontrado")
         return None
@@ -141,7 +183,7 @@ def gerar_relatorio_alertas(alertas):
     for alerta in alertas:
         relatorio['alertas_detalhados'].append({
             'ID_Transacao': alerta['ID_TRANSACAO'],
-            'Data_Transacao': alerta['DATA_TRANSACAO'].strftime('%d/%m/%Y %H:%M') if pd.notna(alerta['DATA_TRANSACAO']) else 'N/A',
+            'Data_Transacao': alerta['DATA_TRANSACAO'].strftime('%d/%m/%Y %H:%M') if hasattr(alerta['DATA_TRANSACAO'], 'strftime') else str(alerta['DATA_TRANSACAO']),
             'SKU': alerta['SKU'],
             'Descricao_Item': alerta['DESC_ITEM'],
             'Volume_Movimentado': alerta['VOLUME_MOVIMENTADO'],
@@ -153,30 +195,22 @@ def gerar_relatorio_alertas(alertas):
     return relatorio
 
 def executar_auditoria_colmeia(base_dir, estoque_posicao):
-    """Função principal da auditoria de colmeia"""
     log_auditoria("=== EXECUTANDO AUDITORIA DE RISCO DE COLMEIA ===")
     
-    arquivos = os.listdir(base_dir)
-    transacoes_files = [f for f in arquivos if 'historico_transacoes' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
+    caminho_transacoes = encontrar_arquivo_transacoes(base_dir)
     
-    if not transacoes_files:
+    if not caminho_transacoes:
         log_auditoria("Arquivo de transações não encontrado!")
         return None
     
-    caminho_transacoes = os.path.join(base_dir, transacoes_files[0])
-    
-    # Ler transações
     transacoes_df = ler_transacoes(caminho_transacoes)
     if transacoes_df is None:
         return None
     
-    # Filtrar transações recentes
     transacoes_recentes = filtrar_transacoes_recentes(transacoes_df, dias_retroativos=3)
     
-    # Analisar risco de colmeia
     alertas = analisar_risco_colmeia(transacoes_recentes, estoque_posicao)
     
-    # Gerar relatório
     relatorio = gerar_relatorio_alertas(alertas)
     
     if relatorio:
@@ -184,57 +218,23 @@ def executar_auditoria_colmeia(base_dir, estoque_posicao):
         log_auditoria(f"Volume total movimentado com risco: {relatorio['volume_total_movimentado']}")
         log_auditoria(f"SKUs afetados: {relatorio['skus_afetados']}")
         
-        # Log detalhado dos primeiros alertas
-        for i, alerta in enumerate(relatorio['alertas_detalhados'][:5]):
+        for i, alerta in enumerate(relatorio['alertas_detalhados'][:3]):
             log_auditoria(f"Alerta {i+1}: {alerta}")
     
     return relatorio
 
-# Função para integrar com o código principal
-def adicionar_auditoria_colmeia_ao_main(main_function):
-    """Decorator para adicionar auditoria de colmeia ao main existente"""
-    def wrapper():
-        # Executar o main original
-        resultado_main = main_function()
-        
-        # Executar auditoria de colmeia se o main foi bem-sucedido
-        if resultado_main and 'estoque_posicao' in resultado_main:
-            log_auditoria("Iniciando auditoria de colmeia após processamento principal")
-            relatorio_colmeia = executar_auditoria_colmeia(
-                resultado_main['base_dir'], 
-                resultado_main['estoque_posicao']
-            )
-            
-            if relatorio_colmeia:
-                # Adicionar ao resultado final
-                resultado_main['auditoria_colmeia'] = relatorio_colmeia
-        
-        return resultado_main
-    
-    return wrapper
-
-# Exemplo de uso integrado (modificar seu main existente):
-"""
-@adicionar_auditoria_colmeia_ao_main
-def main():
-    # Seu código main atual que retorna base_dir e estoque_posicao
-    # ...
-    return {
-        'base_dir': BASE_DIR_AUD,
-        'estoque_posicao': estoque_posicao,
-        'indicadores': indicadores
-    }
-"""
-
-# Para uso direto (teste independente):
 if __name__ == "__main__":
-    # Teste independente da auditoria
-    BASE_DIR_TESTE = _find_onedrive_subfolder("Gestão de Estoque - Gestão_Auditoria")
-    if BASE_DIR_TESTE:
-        # Primeiro precisa criar o estoque_posicao (usando o código principal)
-        # Esto é apenas para teste - na prática será integrado ao main
-        log_auditoria("Executando teste independente da auditoria")
-        
-        # Aqui você precisaria ter o estoque_posicao carregado
-        # Para teste, pode carregar de um arquivo temporário ou usar dados de exemplo
-        pass
+    from pathlib import Path
+    
+    base_dir_teste = Path.cwd()
+    log_auditoria("Executando teste independente da auditoria")
+    
+    try:
+        arquivos_estoque = glob.glob("estoque_posicao_*.csv")
+        if arquivos_estoque:
+            estoque_posicao = pd.read_csv(max(arquivos_estoque, key=os.path.getmtime), sep=';')
+            relatorio = executar_auditoria_colmeia(base_dir_teste, estoque_posicao)
+        else:
+            log_auditoria("Nenhum arquivo estoque_posicao encontrado para teste")
+    except Exception as e:
+        log_auditoria(f"Erro no teste independente: {e}")
