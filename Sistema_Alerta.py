@@ -13,8 +13,6 @@ from threading import Thread
 import traceback
 import sys
 
-DEBUG_DIR = os.path.join(os.getcwd(), f"_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-
 def setup_logging():
     """Configura logging unificado"""
     log_dir = os.path.join(os.getcwd(), "logs")
@@ -35,13 +33,7 @@ logger = setup_logging()
 def log(mensagem):
     logger.info(mensagem)
 
-def _dump(df, name, index=False):
-    path = os.path.join(DEBUG_DIR, name)
-    try:
-        df.to_csv(path, sep=";", index=index, encoding="utf-8-sig")
-        log(f"[DEBUG] Exportado: {path} ({len(df)} linhas)")
-    except Exception as e:
-        log(f"[WARN] Falha ao exportar {name}: {e}")
+
 def _find_onedrive_subfolder(subfolder_name: str):
     """Encontra pasta do OneDrive"""
     user_dir = os.environ.get("USERPROFILE", "")
@@ -57,6 +49,14 @@ def encontrar_pasta_onedrive_empresa():
 
 transacoes_analisadas = set()
 
+
+EXPECTED_COLS = [
+    "LOCAL_EXPEDICAO","COD_DEPOSITO","COD_ENDERECO","CHAVE_PALLET","VOLUME",
+    "COD_ITEM","DESC_ITEM","LOTE","UOM","DOCUMENTO",
+    "DATA_VALIDADE","DATA_ULTIMA_TRANSACAO","OCUPACAO",
+    "CAPACIDADE","DESCRICAO","QTDE_POR_PALLET","PALLET_COMPLETO","BLOCO","TIPO_ENDERECO",
+    "STATUS_PALLET","SHELF_ITEM","DATA_FABRICACAO","SHELF_ESTOQUE","DIAS_ESTOQUE","DIAS_VALIDADE","DATA_RELATORIO"
+]
 EXPECTED_COLS_TRANSACOES = [
     "ID", "COD_CENTRO", "LOCAL_EXPEDICAO", "COD_DEPOSITO", "COD_ENDERECO", 
     "COD_ITEM", "DESC_ITEM", "LOTE", "VOLUME", "UOM", 
@@ -78,48 +78,42 @@ def _read_csv_transacoes_strict(path, encodings=("utf-8-sig", "utf-8", "latin1",
         try:
             with open(path, "r", encoding=enc, errors="replace") as f:
                 lines = [ln.rstrip("\r\n") for ln in f if ln.strip()]
-
+            
             log(f"Total de linhas lidas: {len(lines)}")
-
+            
             header_idx = None
             for i, ln in enumerate(lines):
                 parts = ln.split(";")
                 if ("ID" in parts) and ("COD_ITEM" in parts) and ("TIPO_MOVIMENTO" in parts):
                     header_idx = i
                     break
-
+            
             if header_idx is None:
                 header_idx = 0
                 log("Header não encontrado, usando primeira linha")
 
             header = _split_fix(lines[header_idx].split(";"), len(EXPECTED_COLS_TRANSACOES))
-
+            
             rows = []
             for ln in lines[header_idx+1:]:
                 parts = _split_fix(ln.split(";"), len(EXPECTED_COLS_TRANSACOES))
                 rows.append(parts)
 
             df_out = pd.DataFrame(rows, columns=EXPECTED_COLS_TRANSACOES, dtype=str)
-            df_out.columns = [c.strip().upper() for c in df_out.columns]
-
+            df_out.columns = [c.strip() for c in df_out.columns]
+            
             for c in df_out.columns:
-                df_out[c] = (
-                    df_out[c].astype(str)
-                             .str.strip()
-                             .str.replace('"', '', regex=False)
-                             .str.replace("'",  '', regex=False)
-                )
-
+                df_out[c] = df_out[c].ast(str).str.strip().str.replace('"', '').str.replace("'", "")
+            
             log(f"CSV lido com sucesso usando encoding: {enc}")
             return df_out
-
+            
         except Exception as e:
             log(f"Falha com encoding {enc}: {e}")
             last_exc = e
             continue
-
+    
     raise last_exc if last_exc else RuntimeError("Falha ao ler CSV de transações com encodings testados.")
-
 
 def encontrar_arquivo_mais_recente(base_dir, padrao):
     try:
@@ -172,8 +166,7 @@ def ler_estoque_posicao(caminho_estoque):
         
         log(f"Estoque_posicao lido - Shape: {df.shape}")
         
-        letras_validas = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
-                           'I13','I14', 'J', 'K', 'Q', 'R17', 'S', 'T', 'U', 'V']
+        letras_validas = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'Q', 'R', 'S', 'T', 'U', 'V']
         mascara_enderecos_validos = df['COD_ENDERECO'].str.upper().str[0].isin(letras_validas)
         df = df[mascara_enderecos_validos].copy()
         
@@ -191,34 +184,34 @@ def ler_estoque_posicao(caminho_estoque):
 
 def ler_transacoes(caminho_transacoes):
     log(f"Lendo transações com método robusto de: {caminho_transacoes}")
-
+    
     try:
         if caminho_transacoes.lower().endswith('.csv'):
             transacoes_df = _read_csv_transacoes_strict(caminho_transacoes)
         else:
             transacoes_df = pd.read_excel(caminho_transacoes)
             transacoes_df.columns = [col.strip().upper() for col in transacoes_df.columns]
-
+        
         log(f"Transações lidas - Shape: {transacoes_df.shape}")
-
+        
         if 'VOLUME' in transacoes_df.columns:
             transacoes_df['VOLUME'] = (
-                transacoes_df['VOLUME'].astype(str)
+                transacoes_df['VOLUME']
+                .astype(str)
                 .str.replace(",", ".", regex=False)
                 .str.replace(r"[^0-9\.\-]", "", regex=True)
             )
             transacoes_df['VOLUME'] = pd.to_numeric(transacoes_df['VOLUME'], errors="coerce")
-
-        for col in ('DATA_VALIDADE', 'CREATED_AT'):
+        
+        colunas_data = ['DATA_VALIDADE', 'CREATED_AT']
+        for col in colunas_data:
             if col in transacoes_df.columns:
-                transacoes_df[col] = pd.to_datetime(transacoes_df[col], dayfirst=True, errors="coerce")
-
+                transacoes_df[col] = pd.to_datetime(transacoes_df['CREATED_AT'], dayfirst=True, errors="coerce")
+        
         return transacoes_df
-
     except Exception as e:
         log(f"Erro ao ler transações: {e}")
         return None
-
 
 def filtrar_transacoes_recentes(transacoes_df, horas_retroativas=1):
     log(f"Filtrando transações das últimas {horas_retroativas} hora(s) do dia atual")
@@ -268,8 +261,7 @@ def filtrar_transacoes_recentes(transacoes_df, horas_retroativas=1):
 def filtrar_enderecos_validos(transacoes_df):
     log("Filtrando endereços válidos (A-K, Q-V)")
     
-    letras_validas = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
-                        'I13','I14', 'J', 'K', 'Q', 'R17', 'S', 'T', 'U', 'V']
+    letras_validas = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'Q', 'R', 'S', 'T', 'U', 'V']
     mascara_enderecos_validos = transacoes_df['COD_ENDERECO'].str.upper().str[0].isin(letras_validas)
     transacoes_filtradas = transacoes_df[mascara_enderecos_validos].copy()
     
@@ -384,133 +376,72 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
     log(f"Total de alertas de colmeia encontrados: {len(alertas)}")
     return alertas
 
-def _alert_key_for_excel(alerta):
-    rid = str(alerta.get('ID_Transacao') or alerta.get('ID_TRANSACAO') or '').strip()
-    if rid and rid.upper() != 'N/A':
-        return f"ID:{rid}"
-    parts = [
-        str(alerta.get('Endereco_Origem') or alerta.get('ENDERECO_ORIGEM') or '').strip().upper(),
-        str(alerta.get('SKU') or '').strip(),
-        str(alerta.get('Data_Validade') or alerta.get('DATA_VALIDADE') or '').strip(),
-        str(alerta.get('Tipo_Movimento') or alerta.get('TIPO_MOVIMENTO') or '').strip().upper(),
-        str(alerta.get('Data_Transacao') or alerta.get('DATA_TRANSACAO') or '').strip(),
-    ]
-    return "K:" + "|".join(parts)
-
-def _map_alerta_para_linha(alerta):
-    def fmt_dt(v, with_time=False):
-        try:
-            if hasattr(v, 'strftime'):
-                return v.strftime('%Y-%m-%d %H:%M' if with_time else '%Y-%m-%d')
-        except Exception:
-            pass
-        return str(v) if v is not None else ''
-
-    linha = {
-        'ALERT_KEY': _alert_key_for_excel(alerta),
-        'ID_MOVIMENTO': alerta.get('ID_Transacao') or alerta.get('ID_TRANSACAO') or 'N/A',
-        'ENDERECO_RETIRADA': alerta.get('Endereco_Origem') or alerta.get('ENDERECO_ORIGEM'),
-        'SKU': alerta.get('SKU'),
-        'DESCRICAO_ITEM': alerta.get('Descricao_Item') or alerta.get('DESC_ITEM'),
-        'DATA_VALIDADE': fmt_dt(alerta.get('Data_Validade') or alerta.get('DATA_VALIDADE')),
-        'VOLUME_RETIRADO': alerta.get('Volume_Movimentado') or alerta.get('VOLUME_MOVIMENTADO'),
-        'OCUPACAO_ORIGINAL': alerta.get('Ocupacao_Origem') or alerta.get('OCUPACAO_ORIGEM'),
-        'DATA_TRANSACAO': fmt_dt(alerta.get('Data_Transacao') or alerta.get('DATA_TRANSACAO'), with_time=True),
-        'MOTIVO': alerta.get('Motivo') or alerta.get('MOTIVO'),
-        'OPORTUNIDADES_ENCONTRADAS': alerta.get('Oportunidades_Encontradas') or alerta.get('OPORTUNIDADES_ENCONTRADAS'),
-        'TIPO_MOVIMENTO': alerta.get('Tipo_Movimento') or alerta.get('TIPO_MOVIMENTO'),
-    }
-    det = alerta.get('DETALHES_OPORTUNIDADES', []) or []
-    for i in range(3):
-        if i < len(det):
-            op = det[i]
-            linha[f'ENDERECO_ALTERNATIVO_{i+1}'] = op.get('ENDERECO_ALTERNATIVO','')
-            linha[f'OCUPACAO_ALTERNATIVO_{i+1}'] = f"{op.get('OCUPACAO_ATUAL','')}/{op.get('CAPACIDADE','')}"
-            linha[f'LIVRE_ALTERNATIVO_{i+1}'] = op.get('LIVRE','')
-        else:
-            linha[f'ENDERECO_ALTERNATIVO_{i+1}'] = ''
-            linha[f'OCUPACAO_ALTERNATIVO_{i+1}'] = ''
-            linha[f'LIVRE_ALTERNATIVO_{i+1}'] = ''
-    return linha
-
-def _excel_daily_path(base_dir: str) -> str:
-    day = datetime.now().strftime("%Y%m%d")
-    return os.path.join(base_dir, f"alertas_colmeia_{day}.xlsx")
-
-def gerar_excel_alertas_acumulado(relatorio, base_dir):
-    if not relatorio or relatorio.get('total_alertas', 0) == 0:
-        log("Nenhum alerta para acumular no Excel")
+def gerar_excel_alertas(relatorio, base_dir):
+    if not relatorio or relatorio['total_alertas'] == 0:
+        log("Nenhum alerta para gerar Excel")
         return None
-
+    
     try:
-        novos = pd.DataFrame([_map_alerta_para_linha(a) for a in relatorio['alertas']])
-        if 'DATA_TRANSACAO' in novos.columns:
-            try:
-                novos['_DT_ORD'] = pd.to_datetime(novos['DATA_TRANSACAO'], errors='coerce', dayfirst=True)
-                novos = novos.sort_values('_DT_ORD', ascending=False).drop(columns=['_DT_ORD'])
-            except Exception:
-                pass
-
-        xlsx_path = _excel_daily_path(base_dir)
-
-        if os.path.exists(xlsx_path):
-            try:
-                antigos = pd.read_excel(xlsx_path, sheet_name='Todos_Alertas')
-            except Exception as e:
-                log(f"[EXCEL] Falha ao ler existentes: {e} — vou recriar do zero.")
-                antigos = pd.DataFrame(columns=list(novos.columns))
-
-            if 'ALERT_KEY' not in antigos.columns:
-                antigos['ALERT_KEY'] = ''
-
-            combinado = pd.concat([antigos, novos], ignore_index=True)
-            combinado = combinado.drop_duplicates(subset=['ALERT_KEY'], keep='first')
-
-        else:
-            combinado = novos
-
-        resumo_sku = combinado.groupby(['SKU', 'DESCRICAO_ITEM'], dropna=False).agg(
-            VOLUME_TOTAL=('VOLUME_RETIRADO', 'sum'),
-            QTD_ALERTAS=('ALERT_KEY', 'count'),
-            ENDERECOS_AFETADOS=('ENDERECO_RETIRADA', 'nunique')
-        ).reset_index()
-
-        resumo_end = combinado.groupby(['ENDERECO_RETIRADA'], dropna=False).agg(
-            VOLUME_TOTAL=('VOLUME_RETIRADO', 'sum'),
-            QTD_ALERTAS=('ALERT_KEY', 'count'),
-            SKUS_DIFERENTES=('SKU', 'nunique')
-        ).reset_index()
-
-        with pd.ExcelWriter(xlsx_path, engine='openpyxl', mode='w') as writer:
-            combinado.to_excel(writer, sheet_name='Todos_Alertas', index=False)
-            resumo_sku.to_excel(writer, sheet_name='Resumo_SKU', index=False)
-            resumo_end.to_excel(writer, sheet_name='Resumo_Endereco', index=False)
-
-        log(f"[EXCEL] Atualizado (acumulado): {xlsx_path}  | Total no dia: {len(combinado)}")
-        return xlsx_path
-
+        dados_excel = []
+        
+        for alerta in relatorio['alertas']:
+            linha = {
+                'ID_MOVIMENTO': alerta['ID_TRANSACAO'],
+                'ENDERECO_RETIRADA': alerta['ENDERECO_ORIGEM'],
+                'SKU': alerta['SKU'],
+                'DESCRICAO_ITEM': alerta['DESC_ITEM'],
+                'DATA_VALIDADE': alerta['DATA_VALIDADE'].strftime('%Y-%m-%d') if hasattr(alerta['DATA_VALIDADE'], 'strftime') else str(alerta['DATA_VALIDADE']),
+                'VOLUME_RETIRADO': alerta['VOLUME_MOVIMENTADO'],
+                'OCUPACAO_ORIGINAL': f"{alerta['OCUPACAO_ORIGEM']}/{alerta['CAPACIDADE_ORIGEM']}",
+                'DATA_TRANSACAO': alerta['DATA_TRANSACAO'].strftime('%Y-%m-%d %H:%M') if hasattr(alerta['DATA_TRANSACAO'], 'strftime') else str(alerta['DATA_TRANSACAO']),
+                'MOTIVO': alerta['MOTIVO'],
+                'OPORTUNIDADES_ENCONTRADAS': alerta['OPORTUNIDADES_ENCONTRADAS'],
+                'TIPO_MOVIMENTO': alerta['TIPO_MOVIMENTO']
+            }
+            
+            for i in range(3):
+                if i < len(alerta['DETALHES_OPORTUNIDADES']):
+                    oportunidade = alerta['DETALHES_OPORTUNIDADES'][i]
+                    linha[f'ENDERECO_ALTERNATIVO_{i+1}'] = oportunidade['ENDERECO_ALTERNATIVO']
+                    linha[f'OCUPACAO_ALTERNATIVO_{i+1}'] = f"{oportunidade['OCUPACAO_ATUAL']}/{oportunidade['CAPACIDADE']}"
+                    linha[f'LIVRE_ALTERNATIVO_{i+1}'] = oportunidade['LIVRE']
+                else:
+                    linha[f'ENDERECO_ALTERNATIVO_{i+1}'] = ''
+                    linha[f'OCUPACAO_ALTERNATIVO_{i+1}'] = ''
+                    linha[f'LIVRE_ALTERNATIVO_{i+1}'] = ''
+            
+            dados_excel.append(linha)
+        
+        df_excel = pd.DataFrame(dados_excel)
+        df_excel = df_excel.sort_values('VOLUME_RETIRADO', ascending=False)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        excel_path = os.path.join(base_dir, f"alertas_colmeia_{timestamp}.xlsx")
+        
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            df_excel.to_excel(writer, sheet_name='Todos_Alertas', index=False)
+        
+        log(f"Arquivo Excel gerado: {excel_path}")
+        return excel_path
+        
     except Exception as e:
-        log(f"[EXCEL][ERRO] {e}")
-        import traceback; log(traceback.format_exc())
+        log(f"Erro ao gerar Excel: {e}")
         return None
-
 
 def executar_auditoria_transacoes():
     log("=== EXECUTANDO AUDITORIA DE TRANSAÇÕES ===")
+    
     try:
         base_dir = encontrar_pasta_onedrive_empresa()
         if not base_dir:
             log("Pasta do OneDrive não encontrada!")
             return
-
-        caminho_estoque = build_estoque_posicao_if_needed(base_dir, max_age_minutes=30)
-        if not caminho_estoque:
-            log("[TRANS] Não foi possível gerar/encontrar estoque_posicao — abortando este ciclo.")
-            return
-
+        
+        caminho_estoque = encontrar_arquivo_estoque_posicao(base_dir)
         caminho_transacoes = encontrar_arquivo_transacoes(base_dir)
-        if not caminho_transacoes:
-            log("Arquivo de transações não encontrado!")
+        
+        if not caminho_estoque or not caminho_transacoes:
+            log("Arquivos necessários não encontrados!")
             return
         
         estoque_posicao = ler_estoque_posicao(caminho_estoque)
@@ -532,7 +463,7 @@ def executar_auditoria_transacoes():
                 'alertas': alertas
             }
             
-            excel_path = gerar_excel_alertas_acumulado(relatorio, base_dir)
+            excel_path = gerar_excel_alertas(relatorio, base_dir)
             if excel_path:
                 log(f"Relatório de alertas salvo: {excel_path}")
                 
@@ -545,6 +476,7 @@ def executar_auditoria_transacoes():
         log(traceback.format_exc())
 
 def enviar_email_alertas(relatorio, excel_path):
+    """Envia email com alertas de transações"""
     try:
         assunto = f"[Auditoria Colmeia] {relatorio['total_alertas']} alertas de risco encontrados"
         
@@ -576,103 +508,13 @@ def enviar_email_alertas(relatorio, excel_path):
     except Exception as e:
         log(f"Falha ao enviar e-mail de alertas: {e}")
 
+
+
 def _canon(s: str) -> str:
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
-    s = re.sub(r"\s+", " ", s.replace("-", " ").replace("_", " ")).strip().upper()
+    s = s.replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip().upper()
     return s
-
-def _filtrar_tipo(df: pd.DataFrame, col_nome_candidatos=('TIPO_ENDERECO','TIPO ENDERECO','TIPO','TIPO_POSICAO'),
-                  alvo=("DINAMICO","MEZANINO","PUSH BACK","PUSHBACK")) -> pd.DataFrame:
-    try:
-        col_tipo = _pick_col(df, list(col_nome_candidatos))
-        if col_tipo != 'TIPO_ENDERECO':
-            df = df.rename(columns={col_tipo: 'TIPO_ENDERECO'})
-        df['_TIPO_CANON'] = df['TIPO_ENDERECO'].map(_canon)
-        antes = len(df)
-        df = df[df['_TIPO_CANON'].isin(set(alvo))].copy()
-        df.drop(columns=['_TIPO_CANON'], inplace=True, errors='ignore')
-        log(f"[TIPO] Filtro TIPO_ENDERECO aplicado: {antes} -> {len(df)}")
-    except Exception as e:
-        log(f"[TIPO][AVISO] Não foi possível aplicar filtro de tipo: {e}")
-    return df
-
-def _salvar_estoque_posicao(base_dir: str, estoque_posicao: pd.DataFrame) -> str:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(base_dir, f"estoque_posicao_{ts}.csv")
-    df = estoque_posicao.copy()
-    for col in ("DATA_VALIDADE","DATA_PRIMEIRO_PALLET"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
-    try:
-        df.to_csv(path, sep=";", index=False, encoding="utf-8-sig")
-        log(f"[EXPORT] estoque_posicao salvo em: {path} ({len(df)} linhas)")
-        limpar_estoques_posicao_antigos(base_dir, keep_last=1)
-
-        return path
-    except Exception as e:
-        log(f"[EXPORT][ERRO] Falha ao salvar estoque_posicao: {e}")
-        return ""
-
-
-def _mtime_or_0(p):
-    try:
-        return os.path.getmtime(p)
-    except Exception:
-        return 0
-
-def build_estoque_posicao_if_needed(base_dir: str, max_age_minutes: int = 30) -> str:
-    atual = encontrar_arquivo_estoque_posicao(base_dir)
-    atual_mtime = _mtime_or_0(atual) if atual else 0
-
-    arquivos = os.listdir(base_dir)
-    estoque_files = [f for f in arquivos if 'estoque_detalhado' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
-    enderecos_files = [f for f in arquivos if 'cap_endereco' in f.lower() and f.lower().endswith(('.csv','.xlsx','.xls'))]
-
-    if not estoque_files or not enderecos_files:
-        log("[BOOT] Fontes (estoque_detalhado/cap_endereco) não encontradas — não há como gerar estoque_posicao.")
-        return atual or ""
-
-    estoque_path  = os.path.join(base_dir, estoque_files[0])
-    enderecos_path= os.path.join(base_dir, enderecos_files[0])
-    src_mtime = max(_mtime_or_0(estoque_path), _mtime_or_0(enderecos_path))
-
-    need_build = False
-    if not atual:
-        need_build = True
-        log("[BOOT] Não existe estoque_posicao — será criado agora.")
-    else:
-        age_min = (time.time() - atual_mtime) / 60.0
-        if age_min > max_age_minutes and src_mtime > atual_mtime:
-            need_build = True
-            log(f"[BOOT] estoque_posicao está velho ({age_min:.1f} min) e fontes são mais novas — será recriado.")
-
-    if not need_build:
-        return atual
-
-    try:
-        est_df = ler_estoque(estoque_path)
-        end_df = ler_enderecos(enderecos_path)
-
-        est_df = _filtrar_tipo(est_df, alvo=("DINAMICO","PUSH BACK","PUSHBACK"))   
-        end_df = _filtrar_tipo(end_df,  alvo=("DINAMICO","MEZANINO","PUSH BACK","PUSHBACK"))  
-
-        miss = [c for c in ("BLOCO","COD_ENDERECO","CAPACIDADE") if c not in end_df.columns]
-        if miss:
-            log(f"[BOOT][ERRO] cap_endereco sem colunas: {miss}")
-            return atual or ""
-
-        miss2 = [c for c in ("BLOCO","COD_ENDERECO","COD_ITEM","DATA_VALIDADE","CHAVE_PALLET") if c not in est_df.columns]
-        if miss2:
-            log(f"[BOOT][ERRO] estoque_detalhado sem colunas: {miss2}")
-            return atual or ""
-
-        est_pos = criar_estoque_posicao(est_df, end_df)
-        path = _salvar_estoque_posicao(base_dir, est_pos)
-        return path or (atual or "")
-    except Exception as e:
-        log(f"[BOOT][ERRO] Falha ao construir estoque_posicao: {e}")
-        log(traceback.format_exc())
-        return atual or ""
 
 def _pick_col(df, candidatos):
     cols = {c.strip().lower(): c for c in df.columns}
@@ -690,14 +532,6 @@ def _pick_col(df, candidatos):
     raise ValueError(f"Coluna não encontrada. Candidatos: {candidatos}")
 
 def _read_csv_strict_build_df(path, encodings=("utf-8-sig","utf-8","latin1","cp1252")):
-    EXPECTED_COLS = [
-    "LOCAL_EXPEDICAO","COD_DEPOSITO","COD_ENDERECO","CHAVE_PALLET","VOLUME",
-    "COD_ITEM","DESC_ITEM","LOTE","UOM","DOCUMENTO",
-    "DATA_VALIDADE","DATA_ULTIMA_TRANSACAO","OCUPACAO",
-    "CAPACIDADE","DESCRICAO","QTDE_POR_PALLET","PALLET_COMPLETO","BLOCO","TIPO_ENDERECO",
-    "STATUS_PALLET","SHELF_ITEM","DATA_FABRICACAO","SHELF_ESTOQUE","DIAS_ESTOQUE","DIAS_VALIDADE","DATA_RELATORIO"
-]
-
     last_exc = None
     for enc in encodings:
         try:
@@ -831,87 +665,28 @@ def criar_estoque_posicao(estoque_df, enderecos_df):
     
     return estoque_posicao
 
-def limpar_estoques_posicao_antigos(base_dir:str, keep_last: int=1):
-    try:
-        padroes=["estoque_posicao_*.csv","estoque_posicao_*.xlsx"]
-        for padrao in padroes:
-            arquivos = glob.glob(os.path.join(base_dir, padrao))
-            arquivos.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-            for f in arquivos[keep_last:]:
-                try:
-                    os.remove(f)
-                    log(f"Removido antigo: {os.path.basename(f)}")
-                except Exception as e:
-                    log(f"[ERRO]{f}:{e}")
-    except Exception as e:
-        log(f"[CLEAN][ERRO] Falha na limpeza de estoque_posicao: {e}")
-
 def calcular_indicadores(estoque_posicao, enderecos_df):
-    log("Calculando indicadores (com logs)…")
-
-    capacidade_por_endereco = estoque_posicao.groupby('COD_ENDERECO')['CAPACIDADE'].first()
-    ocupacao_por_endereco = estoque_posicao.groupby('COD_ENDERECO')['OCUPACAO'].sum()
+    capacidade_total = enderecos_df['CAPACIDADE'].sum()
+    livre_total = estoque_posicao['LIVRE'].sum()
+    porColmeia = livre_total / capacidade_total if capacidade_total > 0 else 0
     
-    total_cap = float(capacidade_por_endereco.sum())
-    total_ocup = float(ocupacao_por_endereco.sum())
-    cap_real=float(enderecos_df["CAPACIDADE"].sum())
-    livre = total_cap - total_ocup
-        
-    porColmeia = (livre / cap_real) if cap_real else 0.0
-    log(f"[COLMEIA] livre={livre:.0f}  cap_total={cap_real:.0f}  colmeia={porColmeia:.4f}")
-
-    end_com_itens = set(estoque_posicao.loc[estoque_posicao["OCUPACAO"]>0,"COD_ENDERECO"].astype(str))
-    todos_end = set(enderecos_df["COD_ENDERECO"].astype(str))
-    end_vazios_real = len(todos_end - end_com_itens)
-    log(f"[RUAS REAL] total_end={len(todos_end)}  com_itens={len(end_com_itens)}  vazias_real={end_vazios_real}")
-
-    if "OCP_OCUPACAO_OTIMA_GLOBAL" not in estoque_posicao.columns:
-        log("[ERRO] OCP_OCUPACAO_OTIMA_GLOBAL ausente. Verifique a ordem das chamadas.")
-        end_vazios_otimo = end_vazios_real
-    else:
-        end_otim = set(estoque_posicao.loc[estoque_posicao["OCP_OCUPACAO_OTIMA_GLOBAL"]>0,"COD_ENDERECO"].astype(str))
-        end_vazios_otimo = len(todos_end - end_otim)
-        log(f"[RUAS OTIM] com_itens_otim={len(end_otim)}  vazias_otimo={end_vazios_otimo}")
-
-        liberadas_por_endereco = sorted(list((todos_end - end_com_itens) ^ (todos_end - end_otim)))[:50]
-        if liberadas_por_endereco:
-            log(f"[DETALHE] primeiros endereços que mudaram de status (max 50): {liberadas_por_endereco}")
-
-    if "CHAVE_POS" not in estoque_posicao.columns:
-        log("[ERRO] CHAVE_POS ausente em estoque_posicao.")
-        pallets_movimentados = 0
-    else:
-        grp = (estoque_posicao
-               .groupby("CHAVE_POS")
-               .agg(Ocupacao_Real=("OCUPACAO","sum"),
-                    Ocupacao_Otima=("OCP_OCUPACAO_OTIMA_GLOBAL","sum"))
-               .reset_index())
-        grp["DIFF_ABS"] = (grp["Ocupacao_Otima"] - grp["Ocupacao_Real"]).abs()
-        pallets_movimentados = grp["DIFF_ABS"].sum() / 2.0
-        log(f"[MOVE] soma |Δ| = {grp['DIFF_ABS'].sum():.0f}  paletes_mov = {pallets_movimentados:.0f}")
-        _dump(grp.sort_values("DIFF_ABS", ascending=False).head(50), "pallets_mov_top50_chavepos.csv")
-
+    enderecos_com_itens = estoque_posicao[estoque_posicao['OCUPACAO'] > 0]['COD_ENDERECO'].unique()
+    todos_enderecos = enderecos_df['COD_ENDERECO'].unique()
+    end_vazios_real = len(np.setdiff1d(todos_enderecos, enderecos_com_itens))
+    
+    end_vazios_otimo = end_vazios_real
+    pallets_movimentados = 0
     end_vazios_total = end_vazios_otimo - end_vazios_real
-    log(f"[LIBERADAS] {end_vazios_total} ruas")
-
-    miss_cap = estoque_posicao["CAPACIDADE"].isnull().sum()
-    if miss_cap:
-        top = (estoque_posicao[estoque_posicao["CAPACIDADE"].isnull()][["BLOCO","COD_ENDERECO"]]
-               .drop_duplicates())
-        _dump(top, "enderecos_sem_capacidade.csv")
-        log(f"[CHECK] {miss_cap} linhas sem CAPACIDADE — veja enderecos_sem_capacidade.csv")
-
+    
     return {
         'porColmeia': porColmeia,
-        'end_vazios_real': int(end_vazios_real),
-        'end_vazios_otimo': int(end_vazios_otimo),
-        'pallets_movimentados': float(pallets_movimentados),
-        'end_vazios_total': int(end_vazios_total)
+        'end_vazios_real': end_vazios_real,
+        'end_vazios_otimo': end_vazios_otimo,
+        'pallets_movimentados': pallets_movimentados,
+        'end_vazios_total': end_vazios_total
     }
 
-
 def executar_auditoria_indicadores():
-    """Executa auditoria de indicadores por turno"""
     log("=== EXECUTANDO AUDITORIA DE INDICADORES ===")
     
     try:
@@ -990,7 +765,6 @@ def enviar_relatorio_email(assunto, corpo):
         log(f"Falha ao enviar e-mail de resultado: {e}")
 
 
-
 def main():
     log("=" * 80)
     log("INICIANDO SISTEMA DE AUDITORIA DE ESTOQUE 24x7")
@@ -1017,7 +791,7 @@ def main():
             break
         except Exception as e:
             log(f"Erro no loop principal: {e}")
-            time.sleep(300)  #
+            time.sleep(300)  
 
 if __name__ == "__main__":
     main()

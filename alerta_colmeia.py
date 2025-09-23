@@ -53,7 +53,6 @@ def limpar_relatorios_antigos(base_dir: str, padrao: str = "estoque_posicao_*.cs
         return 0
 def salvar_estoque_posicao_no_diretorio(base_dir: str, estoque_posicao: pd.DataFrame,
                                          salvar_xlsx: bool = False) -> str:
-    """Salva o estoque_posicao e retorna o caminho do arquivo"""
     
     limpar_relatorios_antigos(base_dir, "estoque_posicao_*.csv")
     if salvar_xlsx:
