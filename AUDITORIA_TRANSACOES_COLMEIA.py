@@ -16,7 +16,6 @@ import sys
 DEBUG_DIR = os.path.join(os.getcwd(), f"_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
 def setup_logging():
-    """Configura logging unificado"""
     log_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(log_dir, exist_ok=True)
     
@@ -43,7 +42,6 @@ def _dump(df, name, index=False):
     except Exception as e:
         log(f"[WARN] Falha ao exportar {name}: {e}")
 def _find_onedrive_subfolder(subfolder_name: str):
-    """Encontra pasta do OneDrive"""
     user_dir = os.environ.get("USERPROFILE", "")
     for nome in os.listdir(user_dir):
         if "DIAS BRANCO" in nome.upper():
@@ -319,6 +317,7 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
             data_validade = transacao['DATA_VALIDADE']
             volume = transacao['VOLUME']
             endereco_origem = transacao['COD_ENDERECO']
+            login = transacao.get('CRIADO_POR_LOGIN','N/A')
             
             if pd.isna(data_validade):
                 continue
@@ -357,6 +356,7 @@ def analisar_risco_colmeia(transacoes_df, estoque_posicao):
                     'ENDERECO_ORIGEM': endereco_origem,
                     'TIPO_MOVIMENTO': transacao['TIPO_MOVIMENTO'],
                     'MOTIVO': transacao.get('MOTIVO', 'N/A'),
+                    'CRIADO_POR_LOGIN':login,
                     'ESTAVA_CHEIO': True,
                     'OCUPACAO_ORIGEM': info_origem['OCUPACAO'],
                     'CAPACIDADE_ORIGEM': info_origem['CAPACIDADE'],
@@ -417,6 +417,7 @@ def _map_alerta_para_linha(alerta):
         'OCUPACAO_ORIGINAL': alerta.get('Ocupacao_Origem') or alerta.get('OCUPACAO_ORIGEM'),
         'DATA_TRANSACAO': fmt_dt(alerta.get('Data_Transacao') or alerta.get('DATA_TRANSACAO'), with_time=True),
         'MOTIVO': alerta.get('Motivo') or alerta.get('MOTIVO'),
+        'CRIADO_POR_LOGIN': alerta.get('Criado_Por_Login') or alerta.get('CRIADO_POR_LOGIN', 'N/A'),
         'OPORTUNIDADES_ENCONTRADAS': alerta.get('Oportunidades_Encontradas') or alerta.get('OPORTUNIDADES_ENCONTRADAS'),
         'TIPO_MOVIMENTO': alerta.get('Tipo_Movimento') or alerta.get('TIPO_MOVIMENTO'),
     }
@@ -548,6 +549,21 @@ def enviar_email_alertas(relatorio, excel_path):
     try:
         assunto = f"[Auditoria Colmeia] {relatorio['total_alertas']} alertas de risco encontrados"
         
+        detalhes_tabela = ""
+        if relatorio.get('alertas'):
+            for i, alerta in enumerate(relatorio['alertas'][:10], 1):  
+                detalhes_tabela += f"""
+                <tr>
+                    <td>{i}</td>
+                    <td>{alerta.get('ID_TRANSACAO', 'N/A')}</td>
+                    <td>{alerta.get('CRIADO_POR_LOGIN', 'N/A')}</td>
+                    <td>{alerta.get('ENDERECO_ORIGEM', 'N/A')}</td>
+                    <td>{alerta.get('SKU', 'N/A')}</td>
+                    <td>{alerta.get('VOLUME_MOVIMENTADO', 'N/A')}</td>
+                    <td>{', '.join([op.get('ENDERECO_ALTERNATIVO', '') for op in alerta.get('DETALHES_OPORTUNIDADES', [])])}</td>
+                </tr>
+                """
+        
         corpo = f"""
         <h2>Alertas de Risco de Colmeia</h2>
         <p>Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
@@ -559,13 +575,31 @@ def enviar_email_alertas(relatorio, excel_path):
             <li><strong>SKUs afetados:</strong> {relatorio['skus_afetados']}</li>
         </ul>
         
-        <p>Arquivo Excel com detalhes anexado.</p>
+        <h3>Detalhes dos Alertas (10 primeiros):</h3>
+        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
+            <thead>
+                <tr style="background-color: #f2f2f2;">
+                    <th>#</th>
+                    <th>ID Transação</th>
+                    <th>Login Responsável</th>
+                    <th>Endereço Origem</th>
+                    <th>SKU</th>
+                    <th>Volume</th>
+                    <th>Endereços Recomendados</th>
+                </tr>
+            </thead>
+            <tbody>
+                {detalhes_tabela}
+            </tbody>
+        </table>
+        
+        <p><strong>Arquivo Excel com todos os detalhes anexado.</strong></p>
         <p>Este é um alerta automático do sistema de auditoria de colmeia.</p>
         """
         
         yag = yagmail.SMTP(user='mdiasbrancoautomacao@gmail.com', password='secwygmzlibyxhhh')
         yag.send(
-            to=['douglas.lins2@mdiasbranco.com.br','leonardobarbosa.silva@mdiasbranco.com.br'
+            to=['douglas.lins2@mdiasbranco.com.br','leonardobarbosa.silva@mdiasbranco.com.br',
                 'silvano.santos@mdiasbranco.com.br','edinaldo.lima@mdiasbranco.com.br',
                 'jefferson.carlos@mdiasbranco.com.br','caroline.sobral@mdiasbranco.com.br',
                 'jose.valentim@mdiasbranco.com.br','david.pereira@mdiasbranco.com.br',
