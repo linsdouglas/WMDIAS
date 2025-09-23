@@ -1,0 +1,31 @@
+2025-09-22 11:01:52,191 - INFO - [DEBUG] Salvando arquivos de diagnóstico em: C:\Users\linsd\PROJETOS\WMDIAS\_debug_20250922_110152
+2025-09-22 11:01:52,191 - INFO - ============================================================
+2025-09-22 11:01:52,191 - INFO - INICIANDO PROCESSO DE ANÁLISE DE ESTOQUE
+2025-09-22 11:01:52,191 - INFO - ============================================================
+2025-09-22 11:01:52,192 - INFO - Procurando pasta do OneDrive da empresa...
+2025-09-22 11:01:52,192 - INFO - Pasta do OneDrive encontrada: C:\Users\linsd\M DIAS BRANCO S.A. INDUSTRIA E COMERCIO DE ALIMENTOS\Gestão de Estoque - Gestão_Auditoria
+2025-09-22 11:01:52,193 - INFO - Arquivos encontrados na pasta: ['.849C9593-D756-4E56-8D6E-42412F2A707B', 'Analises_Colmeia_5_0.pbix', 'auditoria_24_7.xlsx', 'CAP_ENDERECO.xlsx', 'commands.json', 'estoque_detalhado.csv', 'expedicao_edicoes.xlsx', 'historico_transacoes.csv', 'historico_transacoes.xlsx', 'logs', 'rastreabilidade.csv', 'status.json']
+2025-09-22 11:01:52,193 - INFO - Arquivos de estoque encontrados: ['estoque_detalhado.csv']
+2025-09-22 11:01:52,193 - INFO - Arquivos de endereços encontrados: ['CAP_ENDERECO.xlsx']
+2025-09-22 11:01:52,193 - INFO - Lendo arquivo de estoque: C:\Users\linsd\M DIAS BRANCO S.A. INDUSTRIA E COMERCIO DE ALIMENTOS\Gestão de Estoque - Gestão_Auditoria\estoque_detalhado.csv
+2025-09-22 11:01:52,193 - INFO - Processando arquivo (estrito): estoque_detalhado.csv
+2025-09-22 11:01:52,582 - INFO - CSV lido (estrito) — Linhas: 21366, Colunas: ['LOCAL_EXPEDICAO', 'COD_DEPOSITO', 'COD_ENDERECO', 'CHAVE_PALLET', 'VOLUME', 'COD_ITEM', 'DESC_ITEM', 'LOTE', 'UOM', 'DOCUMENTO', 'DATA_VALIDADE', 'DATA_ULTIMA_TRANSACAO', 'OCUPACAO', 'CAPACIDADE', 'DESCRICAO', 'QTDE_POR_PALLET', 'PALLET_COMPLETO', 'BLOCO', 'TIPO_ENDERECO', 'STATUS_PALLET', 'SHELF_ITEM', 'DATA_FABRICACAO', 'SHELF_ESTOQUE', 'DIAS_ESTOQUE', 'DIAS_VALIDADE', 'DATA_RELATORIO']
+2025-09-22 11:01:52,582 - INFO - Colunas do estoque: ['LOCAL_EXPEDICAO', 'COD_DEPOSITO', 'COD_ENDERECO', 'CHAVE_PALLET', 'VOLUME', 'COD_ITEM', 'DESC_ITEM', 'LOTE', 'UOM', 'DOCUMENTO', 'DATA_VALIDADE', 'DATA_ULTIMA_TRANSACAO', 'OCUPACAO', 'CAPACIDADE', 'DESCRICAO', 'QTDE_POR_PALLET', 'PALLET_COMPLETO', 'BLOCO', 'TIPO_ENDERECO', 'STATUS_PALLET', 'SHELF_ITEM', 'DATA_FABRICACAO', 'SHELF_ESTOQUE', 'DIAS_ESTOQUE', 'DIAS_VALIDADE', 'DATA_RELATORIO']
+2025-09-22 11:01:52,583 - INFO - Procurando coluna entre candidatos: ['TIPO_ENDERECO', 'TIPO ENDERECO', 'TIPO', 'TIPO_POSICAO']
+2025-09-22 11:01:52,583 - INFO - Coluna encontrada: TIPO_ENDERECO
+2025-09-22 11:01:52,632 - INFO - Filtro de TIPO_ENDERECO aplicado (DINAMICO/PUSH BACK): 21366 -> 17774 linhas
+2025-09-22 11:01:52,633 - INFO - Procurando coluna entre candidatos: ['BLOCO', 'BLOCO_ENDERECO', 'LOCAL']
+2025-09-22 11:01:52,633 - INFO - Coluna encontrada: BLOCO
+2025-09-22 11:01:52,633 - INFO - Procurando coluna entre candidatos: ['COD_ENDERECO', 'ENDERECO', 'POSICAO']
+2025-09-22 11:01:52,633 - INFO - Coluna encontrada: COD_ENDERECO
+2025-09-22 11:01:52,633 - INFO - Procurando coluna entre candidatos: ['COD_ITEM', 'SKU', 'ITEM', 'PRODUTO']
+2025-09-22 11:01:52,633 - INFO - Coluna encontrada: COD_ITEM
+2025-09-22 11:01:52,633 - INFO - Procurando coluna entre candidatos: ['DATA_VALIDADE', 'VALIDADE', 'DT_VALIDADE']
+2025-09-22 11:01:52,633 - INFO - Coluna encontrada: DATA_VALIDADE
+2025-09-22 11:01:52,634 - INFO - Procurando coluna entre candidatos: ['CHAVE_PALLET', 'PALLET', 'LOTE']
+2025-09-22 11:01:52,634 - INFO - Coluna encontrada: CHAVE_PALLET
+2025-09-22 11:01:52,634 - INFO - Procurando coluna entre candidatos: ['DATA_ULTIMA_TRANSACAO', 'DT_ULTIMA_TRANSACAO', 'ULTIMA_TRANSACAO']
+2025-09-22 11:01:52,634 - INFO - Coluna encontrada: DATA_ULTIMA_TRANSACAO
+2025-09-22 11:01:52,634 - INFO - Arquivo de estoque processado com sucesso
+2025-09-22 11:01:52,634 - INFO - Lendo arquivo de endereços: C:\Users\linsd\M DIAS BRANCO S.A. INDUSTRIA E COMERCIO DE ALIMENTOS\Gestão de Estoque - Gestão_Auditoria\CAP_ENDERECO.xlsx
+2025-09-22 11:01:52,634 - INFO - Lendo arquivo Excel de endereços...
