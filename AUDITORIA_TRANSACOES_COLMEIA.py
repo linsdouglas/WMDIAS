@@ -565,7 +565,14 @@ def enviar_email_alertas(relatorio, excel_path):
         
         yag = yagmail.SMTP(user='mdiasbrancoautomacao@gmail.com', password='secwygmzlibyxhhh')
         yag.send(
-            to=['douglas.lins2@mdiasbranco.com.br'],
+            to=['douglas.lins2@mdiasbranco.com.br','leonardobarbosa.silva@mdiasbranco.com.br'
+                'silvano.santos@mdiasbranco.com.br','edinaldo.lima@mdiasbranco.com.br',
+                'jefferson.carlos@mdiasbranco.com.br','caroline.sobral@mdiasbranco.com.br',
+                'jose.valentim@mdiasbranco.com.br','david.pereira@mdiasbranco.com.br',
+                'inaldo.nascimento@mdiasbranco.com.br','gutemberg.queiroz@mdiasbranco.com.br',
+                'alan.lira@mdiasbranco.com.br','jonas.leiras@mdiasbranco.com.br',
+                'thaiane.pinheiro@mdiasbranco.com.br','sabrina.rodrigues@mdiasbranco.com.br',
+                'genilda.miranda@mdiasbranco.com.br','aleson.souza@mdiasbranco.com.br'],
             subject=assunto,
             contents=corpo,
             attachments=excel_path
